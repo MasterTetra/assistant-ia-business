@@ -1,6 +1,6 @@
 """
 ASSISTANT IA — CENTRE DE GESTION
-Bot Telegram principal — version corrigée
+Bot Telegram principal — compatible Python 3.11/3.12/3.13
 """
 import os
 import json
@@ -19,7 +19,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Import des modules
 from modules.sourcing import analyze_sourcing
 from modules.stock import create_product, get_stock_summary, find_product
 from modules.listings import generate_listing, publish_listing
@@ -27,7 +26,7 @@ from modules.reports import generate_report
 from modules.accounting import get_financial_summary
 from config.settings import TELEGRAM_TOKEN, AUTHORIZED_USERS
 
-# ─── SESSIONS UTILISATEUR ────────────────────────────────
+# ─── SESSIONS ────────────────────────────────────────────
 user_sessions = {}
 
 def get_session(user_id: int) -> dict:
@@ -44,7 +43,7 @@ def is_authorized(user_id: int) -> bool:
         return True
     return user_id in AUTHORIZED_USERS
 
-# ─── /start ──────────────────────────────────────────────
+# ─── COMMANDES ───────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not is_authorized(user.id):
@@ -65,7 +64,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-# ─── /aide ───────────────────────────────────────────────
 async def aide(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📋 *TOUTES LES COMMANDES*\n\n"
@@ -85,12 +83,10 @@ async def aide(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-# ─── GESTION PHOTOS ──────────────────────────────────────
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_authorized(user_id):
         return
-
     session = get_session(user_id)
     msg = update.message
     photo = msg.photo[-1]
@@ -98,7 +94,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_url = file.file_path
     caption = msg.caption or ""
 
-    # Mode achat : accumulation de photos
     if session["mode"] == "enregistrer_achat":
         session["photos_buffer"].append(file_url)
         await msg.reply_text(
@@ -108,28 +103,23 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Mode par défaut : SOURCING
     thinking_msg = await msg.reply_text(
-        "🔍 *Analyse en cours...*\n⏳ Identification + recherche prix\n_~20 secondes_",
+        "🔍 *Analyse en cours...*\n⏳ ~20 secondes",
         parse_mode="Markdown"
     )
     try:
         result = await analyze_sourcing(file_url, caption)
         await thinking_msg.delete()
         await msg.reply_text(result, parse_mode="Markdown")
-
-        # Boutons achat/pass
         keyboard = [[
-            InlineKeyboardButton("✅ J'achète — Enregistrer", callback_data=f"acheter|{file_url}"),
+            InlineKeyboardButton("✅ J'achète", callback_data=f"acheter|{file_url}"),
             InlineKeyboardButton("❌ Je passe", callback_data="passer"),
         ]]
         await msg.reply_text("👆 Décision ?", reply_markup=InlineKeyboardMarkup(keyboard))
-
     except Exception as e:
         logger.error(f"Erreur sourcing: {e}")
         await thinking_msg.edit_text(f"⚠️ Erreur : {str(e)}")
 
-# ─── BOUTONS INLINE ───────────────────────────────────────
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -142,186 +132,151 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session["mode"] = "attente_prix_source"
         session["photos_buffer"] = [photo_url]
         await query.edit_message_text(
-            "🛒 *Parfait ! On enregistre l'achat.*\n\n"
-            "Donne-moi le prix d'achat et la source :\n\n"
+            "🛒 *On enregistre l'achat !*\n\n"
             "Format : `prix;source`\n"
             "Exemple : `25;Brocante Lyon`",
             parse_mode="Markdown"
         )
-
     elif data == "passer":
-        await query.edit_message_text("✅ OK, on passe. Envoie une autre photo quand tu veux !")
-
+        await query.edit_message_text("✅ OK, on passe !")
     elif data.startswith("publier|"):
         ref = data.split("|", 1)[1]
-        thinking = await query.message.reply_text("📡 *Publication en cours...*", parse_mode="Markdown")
+        thinking = await query.message.reply_text("📡 Publication en cours...")
         try:
             result = await publish_listing(ref)
-            await thinking.delete()
-            await query.message.reply_text(result, parse_mode="Markdown")
+            await thinking.edit_text(result, parse_mode="Markdown")
         except Exception as e:
             await thinking.edit_text(f"⚠️ Erreur : {e}")
-
     elif data.startswith("annuler_pub|"):
         await query.edit_message_text("❌ Publication annulée.")
 
-# ─── /acheter ────────────────────────────────────────────
 async def cmd_acheter(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    session = get_session(user_id)
+    session = get_session(update.effective_user.id)
     session["mode"] = "enregistrer_achat"
     session["photos_buffer"] = []
     await update.message.reply_text(
         "📸 *Mode achat activé !*\n\n"
-        "Envoie maintenant les photos de l'objet.\n"
-        "Quand tu as fini, tape /terminer\\_photos",
+        "Envoie les photos de l'objet.\n"
+        "Quand tu as fini → /terminer\\_photos",
         parse_mode="Markdown"
     )
 
-# ─── /terminer_photos ────────────────────────────────────
 async def cmd_terminer_photos(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    session = get_session(user_id)
-
+    session = get_session(update.effective_user.id)
     if not session["photos_buffer"]:
-        await update.message.reply_text(
-            "⚠️ Aucune photo reçue.\n"
-            "Tape /acheter puis envoie tes photos."
-        )
+        await update.message.reply_text("⚠️ Aucune photo. Tape /acheter puis envoie des photos.")
         return
-
     session["mode"] = "attente_prix_source"
     nb = len(session["photos_buffer"])
     await update.message.reply_text(
         f"✅ *{nb} photo(s) enregistrée(s) !*\n\n"
-        "Maintenant donne-moi :\n"
-        "Format : `prix;source`\n\n"
-        "Exemple : `45;Brocante Lyon`\n"
-        "Exemple : `12;Emmaüs Paris`\n"
-        "Exemple : `80;Enchères en ligne`",
+        "Maintenant : `prix;source`\n\n"
+        "Exemples :\n"
+        "`45;Brocante Lyon`\n"
+        "`12;Emmaüs Paris`\n"
+        "`80;Enchères en ligne`",
         parse_mode="Markdown"
     )
 
-# ─── /stock ──────────────────────────────────────────────
 async def cmd_stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    thinking = await update.message.reply_text("📦 Chargement du stock...")
+    thinking = await update.message.reply_text("📦 Chargement...")
     try:
         result = await get_stock_summary()
         await thinking.edit_text(result, parse_mode="Markdown")
     except Exception as e:
         await thinking.edit_text(f"⚠️ Erreur: {e}")
 
-# ─── /chercher ───────────────────────────────────────────
 async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Usage : `/chercher [nom ou ref]`", parse_mode="Markdown")
+        await update.message.reply_text("Usage : `/chercher [nom]`", parse_mode="Markdown")
         return
-    query_text = " ".join(context.args)
-    thinking = await update.message.reply_text(f"🔍 Recherche *{query_text}*...", parse_mode="Markdown")
+    q = " ".join(context.args)
+    thinking = await update.message.reply_text(f"🔍 Recherche *{q}*...", parse_mode="Markdown")
     try:
-        result = await find_product(query_text)
+        result = await find_product(q)
         await thinking.edit_text(result, parse_mode="Markdown")
     except Exception as e:
         await thinking.edit_text(f"⚠️ Erreur: {e}")
 
-# ─── /annonce ────────────────────────────────────────────
 async def cmd_annonce(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Usage : `/annonce [référence]`\nEx: `/annonce REF-2025-0001`", parse_mode="Markdown")
+        await update.message.reply_text("Usage : `/annonce [ref]`\nEx: `/annonce REF-2025-0001`", parse_mode="Markdown")
         return
     ref = context.args[0].upper()
     session = get_session(update.effective_user.id)
-    thinking = await update.message.reply_text(f"✍️ Génération annonce *{ref}*...", parse_mode="Markdown")
+    thinking = await update.message.reply_text(f"✍️ Génération *{ref}*...", parse_mode="Markdown")
     try:
         result = await generate_listing(ref)
         await thinking.delete()
         session["pending_listing_ref"] = ref
         await update.message.reply_text(result, parse_mode="Markdown")
         keyboard = [
-            [InlineKeyboardButton("🚀 Publier sur toutes les plateformes", callback_data=f"publier|{ref}")],
+            [InlineKeyboardButton("🚀 Publier", callback_data=f"publier|{ref}")],
             [InlineKeyboardButton("❌ Annuler", callback_data=f"annuler_pub|{ref}")]
         ]
         await update.message.reply_text("👆 Que faire ?", reply_markup=InlineKeyboardMarkup(keyboard))
     except Exception as e:
         await thinking.edit_text(f"⚠️ Erreur: {e}")
 
-# ─── /rapport ────────────────────────────────────────────
 async def cmd_rapport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     periode = "mois" if context.args and context.args[0].lower() == "mensuel" else "semaine"
-    thinking = await update.message.reply_text(f"📊 Génération rapport ({periode})...")
+    thinking = await update.message.reply_text(f"📊 Rapport {periode}...")
     try:
         result = await generate_report(periode)
         await thinking.edit_text(result, parse_mode="Markdown")
     except Exception as e:
         await thinking.edit_text(f"⚠️ Erreur: {e}")
 
-# ─── /finances ───────────────────────────────────────────
 async def cmd_finances(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    thinking = await update.message.reply_text("💰 Calcul finances...")
+    thinking = await update.message.reply_text("💰 Calcul...")
     try:
         result = await get_financial_summary()
         await thinking.edit_text(result, parse_mode="Markdown")
     except Exception as e:
         await thinking.edit_text(f"⚠️ Erreur: {e}")
 
-# ─── MESSAGES TEXTE ──────────────────────────────────────
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_authorized(user_id):
         return
-
     session = get_session(user_id)
     text = update.message.text.strip()
 
-    # ── Flow achat : attente prix;source ──
     if session["mode"] == "attente_prix_source":
         if ";" in text:
             parts = text.split(";", 1)
             try:
-                prix_achat = float(parts[0].strip().replace("€", "").replace(",", "."))
+                prix = float(parts[0].strip().replace("€","").replace(",","."))
                 source = parts[1].strip()
-                thinking = await update.message.reply_text("📝 Création fiche produit en cours...")
+                thinking = await update.message.reply_text("📝 Création fiche produit...")
                 result = await create_product(
                     photos=session["photos_buffer"],
-                    prix_achat=prix_achat,
+                    prix_achat=prix,
                     source=source
                 )
                 session["mode"] = None
                 session["photos_buffer"] = []
                 await thinking.edit_text(result, parse_mode="Markdown")
             except ValueError:
-                await update.message.reply_text(
-                    "⚠️ Prix invalide.\nFormat : `prix;source`\nEx: `45;Brocante Lyon`",
-                    parse_mode="Markdown"
-                )
+                await update.message.reply_text("⚠️ Format : `prix;source` — Ex: `45;Brocante Lyon`", parse_mode="Markdown")
         else:
-            await update.message.reply_text(
-                "⚠️ Format incorrect.\n\n"
-                "Il faut : `prix;source`\n"
-                "Exemple : `45;Brocante Lyon`",
-                parse_mode="Markdown"
-            )
+            await update.message.reply_text("⚠️ Format : `prix;source` — Ex: `45;Brocante Lyon`", parse_mode="Markdown")
         return
 
-    # ── Commandes naturelles ──
     t = text.lower()
-
     if any(w in t for w in ["rapport", "bilan"]):
         periode = "mois" if "mois" in t else "semaine"
-        thinking = await update.message.reply_text("📊 Génération du rapport...")
+        thinking = await update.message.reply_text("📊 Génération...")
         result = await generate_report(periode)
         await thinking.edit_text(result, parse_mode="Markdown")
-
     elif any(w in t for w in ["stock", "inventaire"]):
         thinking = await update.message.reply_text("📦 Chargement...")
         result = await get_stock_summary()
         await thinking.edit_text(result, parse_mode="Markdown")
-
-    elif any(w in t for w in ["finance", "marge", "argent", "chiffre"]):
+    elif any(w in t for w in ["finance", "marge", "argent"]):
         thinking = await update.message.reply_text("💰 Calcul...")
         result = await get_financial_summary()
         await thinking.edit_text(result, parse_mode="Markdown")
-
     elif "ok publier" in t or t == "publier":
         if session.get("pending_listing_ref"):
             ref = session["pending_listing_ref"]
@@ -329,25 +284,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             result = await publish_listing(ref)
             await thinking.edit_text(result, parse_mode="Markdown")
         else:
-            await update.message.reply_text(
-                "⚠️ Aucune annonce en attente.\nUtilise `/annonce [ref]` d'abord.",
-                parse_mode="Markdown"
-            )
+            await update.message.reply_text("⚠️ Utilise `/annonce [ref]` d'abord.", parse_mode="Markdown")
     else:
         await update.message.reply_text(
             "💡 *Que puis-je faire ?*\n\n"
-            "📸 Envoie une *photo* → analyse sourcing\n"
-            "🛒 /acheter → enregistrer un achat\n"
-            "📦 /stock → ton inventaire\n"
-            "📊 /rapport → tes chiffres\n"
+            "📸 Photo → analyse sourcing\n"
+            "🛒 /acheter → enregistrer achat\n"
+            "📦 /stock → inventaire\n"
+            "📊 /rapport → chiffres\n"
             "❓ /aide → toutes les commandes",
             parse_mode="Markdown"
         )
 
-# ─── LANCEMENT ───────────────────────────────────────────
-async def main():
+# ─── LANCEMENT COMPATIBLE TOUTES VERSIONS PYTHON ─────────
+def main():
     if not TELEGRAM_TOKEN:
-        raise ValueError("❌ TELEGRAM_TOKEN manquant dans les variables d'environnement")
+        raise ValueError("❌ TELEGRAM_TOKEN manquant")
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
@@ -366,7 +318,7 @@ async def main():
     app.add_handler(CallbackQueryHandler(handle_callback))
 
     logger.info("🤖 Bot démarré avec succès !")
-    await app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
