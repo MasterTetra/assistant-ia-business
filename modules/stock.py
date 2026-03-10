@@ -109,7 +109,7 @@ async def create_product(photos: list, prix_achat: float, source: str) -> str:
     """
     ref = await get_next_ref()
     location = await get_next_location()
-    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    now = datetime.now().strftime("%Y-%m-%d")
 
     fields = {
         "Référence": ref,
