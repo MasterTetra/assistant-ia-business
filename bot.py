@@ -586,7 +586,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── MODES ACTIFS EN PRIORITÉ ─────────────────────────
     if session.get("mode") == "flux_attente_prix_achat":
         try:
-            prix_achat = float(re.findall(r'[\d.,]+', update.message.text)[0].replace(',', '.'))
+            raw_prix = update.message.text.strip().replace(" ", "").replace("€", "")
+            # Gérer les formats : 0,1 / 0.1 / 1,50 / 45
+            # Si virgule comme séparateur décimal (ex: 0,1 ou 1,50)
+            if "," in raw_prix and "." not in raw_prix:
+                raw_prix = raw_prix.replace(",", ".")
+            prix_achat = float(raw_prix)
             session["flux_prix_achat"] = prix_achat
             session["mode"] = "flux_validation_achat"
             data_flux = session.get("flux_data", {})
