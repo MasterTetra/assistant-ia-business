@@ -30,35 +30,40 @@ PALIERS = [
 # ─── PROMPT ÉTAPE 1 : ANALYSE MARCHÉ ──────────────────────
 PROMPT_ANALYSE = """Tu es un expert en achat-revente d'objets d'occasion avec 20 ans d'experience.
 
-OBJET : {objet}
-INFOS : {caption}
+OBJET A ANALYSER : {objet}
+INFOS SUPPLEMENTAIRES : {caption}
 
-Fais 2 recherches OBLIGATOIRES :
-1. "{objet_court} eBay prix" — annonces actives
-2. "{objet_court} eBay sold vendu" — UNIQUEMENT les ventes déjà conclues
+ETAPE 1 — Identifie précisément l'objet sur la photo et dans la légende.
 
-IMPORTANT :
-- Les ventes conclues (SOLD/VENDU) sont la référence principale pour PRIX_REVENTE
-- Ne pas confondre annonces actives (espoir du vendeur) avec ventes réelles (prix du marché)
-- Si objet rare ou artistique : cherche aussi sur catawiki.com et 1stdibs.com
+ETAPE 2 — Lance ces recherches dans cet ordre :
+1. "{objet_court} eBay" — prix actuels
+2. "{objet_court} eBay completed sold" — ventes conclues
+3. Si peu de résultats : essaie "{objet_court} site:catawiki.com" ou "{objet_court} price"
 
-Reponds UNIQUEMENT avec ce format exact, sans markdown :
+REGLES IMPORTANTES :
+- Si tu trouves des ventes conclues (SOLD), utilise-les comme référence principale
+- Si tu ne trouves QUE des annonces actives, utilise-les avec prudence
+- Si tu ne trouves RIEN du tout : estime d'après ton expertise (mets NB_ANNONCES: 0 estimé)
+- Ne mets JAMAIS 0 pour PRIX_REVENTE — fais toujours une estimation même sans résultat
+- Pour objets rares/artistiques/signés : leur valeur est souvent plus haute que les résultats basiques
+
+Reponds UNIQUEMENT avec ce format exact, sans markdown, sans astérisques :
 
 OBJET: [nom précis et complet]
 ANNONCES:
-[eBay ou LBC | prix euros | VENDU ou EN VENTE | état]
-PRIX_BAS: [prix le plus bas des ventes CONCLUES]
-PRIX_MOYEN: [moyenne des ventes CONCLUES]
-PRIX_HAUT: [prix le plus haut des ventes CONCLUES]
-PRIX_REVENTE: [prix conseillé basé sur ventes réelles — PAS les annonces actives]
-NB_ANNONCES: [nombre total trouvé]
+[plateforme | prix euros | VENDU ou EN VENTE | état]
+PRIX_BAS: [chiffre seul]
+PRIX_MOYEN: [chiffre seul]
+PRIX_HAUT: [chiffre seul]
+PRIX_REVENTE: [prix conseillé — jamais 0]
+NB_ANNONCES: [nombre ou "0 estimé"]
 DEMANDE: [FORTE ou MOYENNE ou FAIBLE]
 VITESSE: [RAPIDE ou NORMALE ou LENTE]
-POIDS: [estimation en grammes]
+POIDS: [estimation grammes, chiffre seul]
 DIMENSIONS: [{dimensions}]
 ENCOMBREMENT: [PETIT ou MOYEN ou GRAND]
 ENVOI: [FACILE ou MOYEN ou DIFFICILE]
-RAISON: [phrase courte sur tendance marché]"""
+RAISON: [phrase courte sur le marché de cet objet]"""
 
 # ─── PROMPT ÉTAPE 2 : GÉNÉRATION ANNONCE ──────────────────
 PROMPT_ANNONCE = """Tu es un expert en vente sur eBay et Leboncoin.
