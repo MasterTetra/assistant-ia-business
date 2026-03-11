@@ -102,7 +102,7 @@ async def get_next_ref() -> str:
 #  CRÉER UNE FICHE PRODUIT
 # ─────────────────────────────────────────────
 
-async def create_product(photos: list, prix_achat: float, source: str) -> str:
+async def create_product(photos: list, prix_achat: float, source: str, description: str = "") -> str:
     """
     Crée une fiche produit dans Airtable.
     Attribue automatiquement une référence et un emplacement.
@@ -118,8 +118,9 @@ async def create_product(photos: list, prix_achat: float, source: str) -> str:
         "Source": source,
         "Statut": "acheté",
         "Emplacement": location,
-        "Photos URLs": json.dumps(photos),  # stocke les URLs comme JSON
+        "Photo URLs": json.dumps(photos),  # stocke les URLs comme JSON
         "Nombre de photos": len(photos),
+        "Description": description,
     }
 
     payload = {"records": [{"fields": fields}]}
