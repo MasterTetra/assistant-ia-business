@@ -34,6 +34,7 @@ def get_session(user_id: int) -> dict:
         user_sessions[user_id] = {
             "mode": None,
             "photos_buffer": [],
+            "descriptions_buffer": [],
             "pending_listing_ref": None,
         }
     return user_sessions[user_id]
@@ -112,7 +113,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await thinking_msg.delete()
         await msg.reply_text(result, parse_mode="Markdown")
         keyboard = [[
-            InlineKeyboardButton("✅ J'achète", callback_data=f"acheter|{file_url}"),
+            InlineKeyboardButton("✅ J'achète", callback_data=f"acheter|{file_url}|{caption}"),
             InlineKeyboardButton("❌ Je passe", callback_data="passer"),
         ]]
         await msg.reply_text("👆 Décision ?", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -128,9 +129,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data.startswith("acheter|"):
-        photo_url = data.split("|", 1)[1]
+        parts = data.split("|", 2)
+        photo_url = parts[1]
+        caption_saved = parts[2] if len(parts) > 2 else ""
         session["mode"] = "attente_prix_source"
         session["photos_buffer"] = [photo_url]
+        session["descriptions_buffer"] = [caption_saved] if caption_saved else []
         await query.edit_message_text(
             "🛒 *On enregistre l'achat !*\n\n"
             "Format : `prix;source`\n"
@@ -154,6 +158,7 @@ async def cmd_acheter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = get_session(update.effective_user.id)
     session["mode"] = "enregistrer_achat"
     session["photos_buffer"] = []
+    session["descriptions_buffer"] = []
     await update.message.reply_text(
         "📸 *Mode achat activé !*\n\n"
         "Envoie les photos de l'objet.\n"
@@ -249,13 +254,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 prix = float(parts[0].strip().replace("€","").replace(",","."))
                 source = parts[1].strip()
                 thinking = await update.message.reply_text("📝 Création fiche produit...")
+                description = " | ".join(session.get("descriptions_buffer", []))
                 result = await create_product(
                     photos=session["photos_buffer"],
                     prix_achat=prix,
-                    source=source
+                    source=source,
+                    description=description
                 )
                 session["mode"] = None
                 session["photos_buffer"] = []
+                session["descriptions_buffer"] = []
                 await thinking.edit_text(result, parse_mode="Markdown")
             except ValueError:
                 await update.message.reply_text("⚠️ Format : `prix;source` — Ex: `45;Brocante Lyon`", parse_mode="Markdown")
