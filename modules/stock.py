@@ -286,9 +286,15 @@ async def update_status(ref: str, new_status: str) -> str:
         record_id = records[0]["id"]
         update_fields = {"Statut": new_status}
 
+        # Si vendu : enregistrer date vente + plateforme
+        if new_status == "vendu":
+            update_fields["Date vente"] = datetime.now().strftime("%Y-%m-%d")
+            if plateforme:
+                update_fields["Plateforme vente"] = plateforme
+
         # Si livré, libérer l'emplacement
         if new_status == "livré":
-            update_fields["Date livraison"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.000Z")
+            update_fields["Date vente"] = datetime.now().strftime("%Y-%m-%d")
 
         async with httpx.AsyncClient(timeout=20) as http:
             resp = await http.patch(
