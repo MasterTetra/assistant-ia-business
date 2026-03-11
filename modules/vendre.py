@@ -85,15 +85,13 @@ async def analyser_et_generer(photos: list, caption: str, objet_identifie: str) 
     image_content = []
     if photos:
         try:
-            async with httpx.AsyncClient(timeout=30) as http:
+            async with httpx.AsyncClient(timeout=60) as http:
                 resp = await http.get(photos[0])
                 img_data = base64.standard_b64encode(resp.content).decode("utf-8")
                 media_type = "image/png" if "png" in resp.headers.get("content-type", "") else "image/jpeg"
                 image_content = [{"type": "image", "source": {"type": "base64", "media_type": media_type, "data": img_data}}]
         except:
             pass
-
-    await asyncio.sleep(5)
 
     # Appel Claude avec recherche web
     messages_content = image_content + [{
@@ -108,7 +106,7 @@ async def analyser_et_generer(photos: list, caption: str, objet_identifie: str) 
 
     response = await _claude_call_with_retry(client.messages.create,
         model=CLAUDE_MODEL,
-        max_tokens=1500,
+        max_tokens=2000,
         tools=[{"type": "web_search_20250305", "name": "web_search"}],
         messages=[{"role": "user", "content": messages_content}]
     )
@@ -290,8 +288,6 @@ async def archiver_airtable(data: dict, ref_gestion: str, photos: list, caption:
             "Prix vente": data["prix_ebay"],
             "Source": source or "Non renseigné",
             "Statut": "en ligne",
-            "Photo URLs": json.dumps(photos),
-            "Nombre de photos": len(photos),
             "Annonce générée": (
                 f"TITRE EBAY: {data['titre_ebay']}\n"
                 f"TITRE LBC: {data['titre_lbc']}\n"
