@@ -1,5 +1,5 @@
 """
-MODULE SOURCING — recherche web en temps réel, optimisé
+MODULE SOURCING — recherche web temps réel + format fiable
 """
 import anthropic
 import httpx
@@ -10,53 +10,47 @@ client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 SOURCING_PROMPT = """Tu es un expert en achat-revente d'objets d'occasion avec 20 ans d'expérience.
 
-INFORMATIONS SUPPLÉMENTAIRES : {caption}
+INFORMATIONS SUPPLÉMENTAIRES SUR L'OBJET : {caption}
 
-MISSION EN 2 ÉTAPES :
+MISSION :
+1. Identifie précisément l'objet sur la photo
+2. Utilise l'outil web_search pour chercher les VRAIS prix actuels sur Vinted, Leboncoin, eBay France, Etsy, Catawiki, Interenchères
+3. Fais 2 recherches maximum :
+   - Recherche 1 : "[nom objet] vendre prix" 
+   - Recherche 2 : "[nom objet] occasion prix"
 
-ÉTAPE 1 — Identifie précisément l'objet sur la photo.
+IMPORTANT : Ta réponse finale doit OBLIGATOIREMENT suivre ce format exact, sans aucune déviation :
 
-ÉTAPE 2 — Utilise l'outil web_search pour chercher les prix réels de cet objet sur :
-Vinted, Leboncoin, eBay France, Etsy, Catawiki, Interenchères, Facebook Marketplace, Drouot
+OBJET IDENTIFIE
+[Nom précis, marque, époque, état]
 
-Fais 3 recherches ciblées :
-1. "[nom objet] prix vente site:vinted.fr OR site:leboncoin.fr"
-2. "[nom objet] prix site:ebay.fr OR site:etsy.com"  
-3. "[nom objet] enchères site:catawiki.com OR site:interencheres.com OR site:drouot.com"
+ANNONCES TROUVEES
+[3-5 vraies annonces : Plateforme - Prix - État]
 
-Après les recherches, réponds EXACTEMENT dans ce format :
+PRIX DU MARCHE
+Prix bas : XXX euros
+Prix moyen : XXX euros
+Prix haut : XXX euros
 
-🔎 *OBJET IDENTIFIÉ*
-[Nom précis, marque/artiste, époque, matière, état apparent]
+RECOMMANDATION
+Prix de revente conseille : XXX euros
+Prix achat maximum : XXX euros
+Marge estimee : XX pourcent
 
-🌐 *ANNONCES TROUVÉES*
-[Liste 4-6 vraies annonces avec : plateforme — prix — état]
+DEMANDE
+[FORTE / MOYENNE / FAIBLE] - [raison courte]
 
-💰 *PRIX DU MARCHÉ* (basé sur les vraies annonces)
-• Prix bas observé : XXX€
-• Prix moyen : XXX€
-• Prix haut : XXX€
+MEILLEURES PLATEFORMES
+[liste]
 
-✅ *RECOMMANDATION*
-• Prix de revente conseillé : XXX€
-• Prix d'achat maximum : XXX€
-• Marge estimée : XX%
+CONSEIL
+[1 phrase pratique]
 
-📈 *DEMANDE*
-[FORTE / MOYENNE / FAIBLE] — [explication]
-
-🏆 *MEILLEURES PLATEFORMES*
-[Selon les résultats trouvés]
-
-⚡ *CONSEIL*
-[1 conseil pratique basé sur les vraies données]"""
+SEUIL
+[prix achat maximum en chiffre uniquement]"""
 
 
 async def analyze_sourcing(photo_url: str, caption: str = "") -> str:
-    """
-    Analyse une photo avec recherche web intégrée.
-    Claude fait lui-même les recherches via web_search.
-    """
     try:
         # Télécharger la photo
         async with httpx.AsyncClient(timeout=30) as http:
@@ -67,7 +61,7 @@ async def analyze_sourcing(photo_url: str, caption: str = "") -> str:
         content_type = resp.headers.get("content-type", "image/jpeg")
         media_type = "image/png" if "png" in content_type else "image/jpeg"
 
-        # Un seul appel Claude avec web_search activé
+        # Appel Claude avec web_search
         response = client.messages.create(
             model=CLAUDE_MODEL,
             max_tokens=2000,
@@ -93,17 +87,72 @@ async def analyze_sourcing(photo_url: str, caption: str = "") -> str:
             }]
         )
 
-        # Extraire le texte final de la réponse
+        # Extraire uniquement le dernier bloc texte
         final_text = ""
         for block in response.content:
             if hasattr(block, "text") and block.text:
                 final_text = block.text
 
-        return final_text if final_text else "⚠️ Aucune analyse retournée."
+        if not final_text:
+            return "Analyse non disponible."
+
+        # Reformater proprement avec emojis
+        return _format_response(final_text)
 
     except anthropic.APIError as e:
-        return f"⚠️ Erreur API Claude : {str(e)}"
-    except httpx.HTTPError as e:
-        return f"⚠️ Impossible de télécharger la photo : {str(e)}"
+        return f"Erreur API Claude : {str(e)}"
     except Exception as e:
-        return f"⚠️ Erreur : {str(e)}"
+        return f"Erreur : {str(e)}"
+
+
+def _format_response(text: str) -> str:
+    """Reformate la réponse brute en message Telegram propre sans Markdown."""
+    lines = text.strip().split("\n")
+    output = []
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        # Titres de sections
+        if line.startswith("OBJET IDENTIFIE"):
+            output.append("\n🔎 OBJET IDENTIFIE")
+        elif line.startswith("ANNONCES TROUVEES"):
+            output.append("\n🌐 ANNONCES TROUVEES")
+        elif line.startswith("PRIX DU MARCHE"):
+            output.append("\n💰 PRIX DU MARCHE")
+        elif line.startswith("RECOMMANDATION"):
+            output.append("\n✅ RECOMMANDATION")
+        elif line.startswith("DEMANDE"):
+            output.append("\n📈 DEMANDE")
+        elif line.startswith("MEILLEURES PLATEFORMES"):
+            output.append("\n🏆 MEILLEURES PLATEFORMES")
+        elif line.startswith("CONSEIL"):
+            output.append("\n⚡ CONSEIL")
+        elif line.startswith("SEUIL"):
+            # Extraire le prix pour le seuil
+            prix = line.replace("SEUIL", "").replace(":", "").strip()
+            try:
+                prix_float = float(''.join(c for c in prix if c.isdigit() or c == '.'))
+                output.append(f"\n💡 Seuil decision : {prix_float} euros maximum")
+            except:
+                output.append(f"\n💡 Seuil : {prix}")
+        else:
+            # Contenu normal
+            if line.startswith("Prix bas"):
+                output.append(f"• {line}")
+            elif line.startswith("Prix moyen"):
+                output.append(f"• {line}")
+            elif line.startswith("Prix haut"):
+                output.append(f"• {line}")
+            elif line.startswith("Prix de revente"):
+                output.append(f"• {line}")
+            elif line.startswith("Prix achat"):
+                output.append(f"• {line}")
+            elif line.startswith("Marge"):
+                output.append(f"• {line}")
+            else:
+                output.append(line)
+
+    return "\n".join(output).strip()
