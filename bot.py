@@ -537,9 +537,11 @@ async def cmd_finances(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_authorized(user_id):
+        logger.info(f"handle_text: UNAUTHORIZED user_id={user_id}")
         return
     session = get_session(user_id)
     text = update.message.text.strip()
+    logger.info(f"handle_text: mode={session.get('mode')!r} text={text!r}")
 
     if session["mode"] == "attente_prix_source":
         if ";" in text:
