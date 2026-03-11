@@ -134,45 +134,97 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_url = file.file_path
     caption = msg.caption or ""
 
-    if session["mode"] == "enregistrer_achat":
-        session["photos_buffer"].append(file_url)
+    # ── MODE LOT ──────────────────────────────────────────
+    if session.get("mode") == "lot_collecte":
+        session["lot_photos"].append({"url": file_url, "caption": caption})
+        nb = len(session["lot_photos"])
+        from modules.lot import MAX_LOT
         await msg.reply_text(
-            f"📸 Photo {len(session['photos_buffer'])} ajoutée ✅\n"
-            f"Envoie d'autres photos ou tape /terminer\\_photos",
+            f"✅ Photo {nb}/{MAX_LOT} ajoutée."
+            + (f"\n📝 {caption}" if caption else "\n💡 Ajoute une légende pour une meilleure analyse.")
+            + "\n\nEnvoie d'autres photos ou tape /lot_analyser"
+        )
+        return
+
+    # ── MODE VENDRE — attente photos supplémentaires ──────
+    if session.get("mode") == "vendre_attente_photos":
+        session["vendre_photos"].append(file_url)
+        if caption and not session["vendre_caption"]:
+            session["vendre_caption"] = caption
+        nb = len(session["vendre_photos"])
+        await msg.reply_text(
+            f"✅ Photo {nb} ajoutée."
+            + (f"\n📝 {caption}" if caption else "")
+            + "\n\nEnvoie d'autres photos ou tape /analyser"
+        )
+        return
+
+    # ── MODE ACHAT CLASSIQUE ──────────────────────────────
+    if session.get("mode") == "enregistrer_achat":
+        session["photos_buffer"].append(file_url)
+        if caption:
+            session["descriptions_buffer"].append(caption)
+        await msg.reply_text(
+            f"📸 Photo {len(session['photos_buffer'])} ajoutée ✅"
+            + (f"\n📝 {caption}" if caption else "")
+            + "\nEnvoie d'autres photos ou tape /terminer\_photos",
             parse_mode="Markdown"
         )
         return
 
-    # Ignorer les photos supplémentaires si une analyse vient d'être faite
-    import time
+    # ── FLUX PRINCIPAL — photo + légende = analyse auto ───
+    import time as _time
     last_analysis = session.get("last_analysis_time", 0)
-    if time.time() - last_analysis < 30:
+    if _time.time() - last_analysis < 30:
         await msg.reply_text(
-            "⏳ Analyse déjà en cours ou terminée.\n"
-            "Appuyez sur ✅ J'achète ou ❌ Je passe sur l'analyse précédente."
+            "⏳ Une analyse est déjà en cours.\n"
+            "Répondez avec ✅ ou ❌ sur l'analyse précédente."
         )
         return
 
-    thinking_msg = await msg.reply_text(
-        "🔍 *Analyse en cours...*\n⏳ ~20 secondes",
-        parse_mode="Markdown"
-    )
+    if not caption:
+        await msg.reply_text(
+            "📸 Photo reçue !\n\n"
+            "💡 Ajoute une légende avec les infos de l'objet :\n"
+            "_Exemple : Porte-clé Renault Sport métal neuf sous blister_\n\n"
+            "Renvoie la photo avec une légende.",
+            parse_mode="Markdown"
+        )
+        return
+
+    thinking_msg = await msg.reply_text("🔍 Analyse en cours...\n⏳ ~30 secondes")
     try:
-        session["last_analysis_time"] = time.time()
-        result = await analyze_sourcing(file_url, caption)
-        # Stocker URL et légende pour le callback "acheter_ok"
-        session["last_photo_url"] = file_url
-        session["last_caption"] = caption
+        session["last_analysis_time"] = _time.time()
+        session["flux_photo_url"] = file_url
+        session["flux_caption"] = caption
+
+        from modules.flux import analyser_marche, formater_analyse
+        data = await analyser_marche(file_url, caption)
+        session["flux_data"] = data
+
         await thinking_msg.delete()
-        await send_long_message(msg, result, parse_mode=None)
-        keyboard = [[
-            InlineKeyboardButton("✅ J'achète", callback_data="acheter_ok"),
-            InlineKeyboardButton("❌ Je passe", callback_data="passer"),
-        ]]
-        await msg.reply_text("👆 Décision ?", reply_markup=InlineKeyboardMarkup(keyboard))
+        await send_long_message(msg, formater_analyse(data), parse_mode=None)
+
+        if data["marge_ok"]:
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Continuer — générer annonce", callback_data="flux_continuer"),
+                InlineKeyboardButton("❌ Annuler", callback_data="flux_annuler"),
+            ]])
+            await msg.reply_text("✅ Marge suffisante. On génère l'annonce ?", reply_markup=keyboard)
+        else:
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("⚠️ Continuer quand même", callback_data="flux_continuer"),
+                InlineKeyboardButton("❌ Abandonner", callback_data="flux_annuler"),
+            ]])
+            await msg.reply_text(
+                f"⚠️ Marge insuffisante ({data['marge_pct']}% — objectif {data['label']})\n"
+                "Vous pouvez quand même continuer.",
+                reply_markup=keyboard
+            )
     except Exception as e:
-        logger.error(f"Erreur sourcing: {e}")
-        await thinking_msg.edit_text(f"⚠️ Erreur : {str(e)}")
+        logger.error(f"Erreur flux: {e}")
+        await thinking_msg.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
+
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -195,6 +247,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     elif data == "passer":
         await query.edit_message_text("✅ OK, on passe !")
+
+    elif data.startswith("gen_annonce|"):
+        ref = data.split("|", 1)[1]
+        thinking = await query.message.reply_text(f"📝 Génération annonce {ref}...")
+        try:
+            from modules.listings import generate_listing
+            result = await generate_listing(ref)
+            await thinking.delete()
+            await send_long_message(query.message, result, parse_mode="Markdown")
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🚀 Publier", callback_data=f"publier|{ref}"),
+                InlineKeyboardButton("❌ Annuler", callback_data=f"annuler_pub|{ref}"),
+            ]])
+            await query.message.reply_text("👆 Que faire ?", reply_markup=keyboard)
+        except Exception as e:
+            await thinking.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
     elif data.startswith("publier|"):
         ref = data.split("|", 1)[1]
         thinking = await query.message.reply_text("📡 Publication en cours...")
@@ -496,10 +564,26 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     source=source,
                     description=description
                 )
+                # Extraire la référence du résultat
+                import re as _re
+                ref_match = _re.search(r'REF-\d{4}-\d+', result)
+                ref = ref_match.group(0) if ref_match else None
                 session["mode"] = None
                 session["photos_buffer"] = []
                 session["descriptions_buffer"] = []
-                await thinking.edit_text(result, parse_mode="Markdown")
+                if ref:
+                    session["pending_listing_ref"] = ref
+                    keyboard = InlineKeyboardMarkup([[
+                        InlineKeyboardButton("✅ Générer l'annonce", callback_data=f"gen_annonce|{ref}"),
+                        InlineKeyboardButton("❌ Plus tard", callback_data="passer"),
+                    ]])
+                    await thinking.edit_text(result, parse_mode="Markdown")
+                    await update.message.reply_text(
+                        "Voulez-vous générer l'annonce maintenant ?",
+                        reply_markup=keyboard
+                    )
+                else:
+                    await thinking.edit_text(result, parse_mode="Markdown")
             except ValueError:
                 await update.message.reply_text("⚠️ Format : `prix;source` — Ex: `45;Brocante Lyon`", parse_mode="Markdown")
         else:
