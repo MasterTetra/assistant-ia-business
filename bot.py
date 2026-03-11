@@ -584,6 +584,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t = text.lower()
 
     # ── MODES ACTIFS EN PRIORITÉ ─────────────────────────
+    logger.info(f"handle_text: mode={session.get('mode')!r} text={text!r}")
     if session.get("mode") == "flux_attente_prix_achat":
         try:
             raw_prix = update.message.text.strip().replace(" ", "").replace("€", "")
