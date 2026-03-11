@@ -138,11 +138,22 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # Ignorer les photos supplémentaires si une analyse vient d'être faite
+    import time
+    last_analysis = session.get("last_analysis_time", 0)
+    if time.time() - last_analysis < 30:
+        await msg.reply_text(
+            "⏳ Analyse déjà en cours ou terminée.\n"
+            "Appuyez sur ✅ J'achète ou ❌ Je passe sur l'analyse précédente."
+        )
+        return
+
     thinking_msg = await msg.reply_text(
         "🔍 *Analyse en cours...*\n⏳ ~20 secondes",
         parse_mode="Markdown"
     )
     try:
+        session["last_analysis_time"] = time.time()
         result = await analyze_sourcing(file_url, caption)
         # Stocker URL et légende pour le callback "acheter_ok"
         session["last_photo_url"] = file_url
