@@ -47,9 +47,9 @@ async def get_financial_summary() -> str:
                 params={
                     "maxRecords": 1000,
                     "fields[]": [
-                        "Statut", "Prix achat", "Prix vente",
-                        "Frais plateforme", "Frais transport",
-                        "Plateforme vente", "Date vente"
+                        "Référence", "Statut", "Prix achat", "Prix vente",
+                        "Frais plateforme", "Frais transport", "Plateforme vente",
+                        "Date achat", "Date vente", "Source"
                     ]
                 }
             )
