@@ -134,7 +134,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         result = await analyze_sourcing(file_url, caption)
         await thinking_msg.delete()
-        await send_long_message(msg, result)
+        await send_long_message(msg, result, parse_mode=None)
         keyboard = [[
             InlineKeyboardButton("✅ J'achète", callback_data=f"acheter|{file_url}|{caption}"),
             InlineKeyboardButton("❌ Je passe", callback_data="passer"),
