@@ -588,36 +588,43 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── MODES ACTIFS EN PRIORITÉ ─────────────────────────
     logger.info(f"handle_text: mode={session.get('mode')!r} text={text!r}")
     if session.get("mode") == "flux_attente_prix_achat":
+        raw_prix = update.message.text.strip().replace(" ", "").replace("€", "")
         try:
-            raw_prix = update.message.text.strip().replace(" ", "").replace("€", "")
-            # Gérer les formats : 0,1 / 0.1 / 1,50 / 45
-            # Si virgule comme séparateur décimal (ex: 0,1 ou 1,50)
             if "," in raw_prix and "." not in raw_prix:
                 raw_prix = raw_prix.replace(",", ".")
             prix_achat = float(raw_prix)
-            session["flux_prix_achat"] = prix_achat
-            session["mode"] = "flux_validation_achat"
-            data_flux = session.get("flux_data", {})
-
-            from modules.flux import formater_rentabilite
-            rentabilite = formater_rentabilite(data_flux, prix_achat)
-            achat_max = data_flux.get("achat_max", 0)
-            marge_ok = prix_achat <= achat_max or prix_achat == 0
-
-            if marge_ok or prix_achat == 0:
-                keyboard = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("✅ Générer l'annonce", callback_data="flux_continuer"),
-                    InlineKeyboardButton("❌ Annuler", callback_data="flux_annuler"),
-                ]])
-                await update.message.reply_text(rentabilite + "\n✅ Dans les marges — on génère l'annonce ?", reply_markup=keyboard)
-            else:
-                keyboard = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("⚠️ Continuer quand même", callback_data="flux_continuer"),
-                    InlineKeyboardButton("❌ Abandonner", callback_data="flux_annuler"),
-                ]])
-                await update.message.reply_text(rentabilite + "\n⚠️ Au-dessus du seuil — continuer quand même ?", reply_markup=keyboard)
-        except (IndexError, ValueError):
+        except (ValueError, IndexError):
             await update.message.reply_text("⚠️ Tapez juste un nombre, ex: 45")
+            return
+
+        session["flux_prix_achat"] = prix_achat
+        session["mode"] = "flux_validation_achat"
+        data_flux = session.get("flux_data") or {}
+
+        from modules.flux import formater_rentabilite
+        rentabilite = formater_rentabilite(data_flux, prix_achat)
+        achat_max = data_flux.get("achat_max", 0)
+        marge_ok = (achat_max == 0) or (prix_achat <= achat_max)
+
+        kb_ok = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Générer l'annonce", callback_data="flux_continuer"),
+            InlineKeyboardButton("❌ Annuler", callback_data="flux_annuler"),
+        ]])
+        kb_warn = InlineKeyboardMarkup([[
+            InlineKeyboardButton("⚠️ Continuer quand même", callback_data="flux_continuer"),
+            InlineKeyboardButton("❌ Abandonner", callback_data="flux_annuler"),
+        ]])
+
+        if marge_ok:
+            await update.message.reply_text(
+                rentabilite + "\n✅ Dans les marges — on génère l'annonce ?",
+                reply_markup=kb_ok
+            )
+        else:
+            await update.message.reply_text(
+                rentabilite + "\n⚠️ Au-dessus du seuil — continuer quand même ?",
+                reply_markup=kb_warn
+            )
 
     elif any(w in t for w in ["rapport", "bilan"]):
         periode = "mois" if "mois" in t else "semaine"
