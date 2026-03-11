@@ -1,100 +1,97 @@
 """
-MODULE SOURCING — recherche web temps réel + format fiable
+MODULE SOURCING — recherche web ciblée eBay, LBC, Catawiki
 """
 import anthropic
 import httpx
 import base64
+import re
 from config.settings import ANTHROPIC_API_KEY, CLAUDE_MODEL
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-SOURCING_PROMPT = """Tu es un expert en achat-revente d'objets d'occasion.
-INFOS SUR L'OBJET : {caption}
 
-ETAPE 1 : Identifie l'objet sur la photo.
-ETAPE 2 : Fais 2 recherches web pour trouver les prix reels sur Vinted, Leboncoin, eBay, Etsy, Catawiki.
+STEP1_PROMPT = """Regarde cette photo et identifie l'objet en UNE seule ligne.
+Format : [Marque/Artiste] [type objet] [matiere] [epoque] [etat]
+Exemple : Vase Daum verre grave Art Nouveau signe bon etat
+Informations supplementaires : {caption}
+Reponds avec UNE seule ligne, rien d'autre."""
 
-REGLE ABSOLUE : Ta reponse finale doit contenir UNIQUEMENT ces blocs dans cet ordre exact.
-N'utilise PAS de Markdown (pas de **, pas de *, pas de #).
-Utilise EXACTEMENT ces titres en majuscules :
 
-OBJET IDENTIFIE
-[description precise]
+STEP2_PROMPT = """Tu es un expert en achat-revente d'objets d'occasion.
+Objet : {objet}
 
-ANNONCES TROUVEES
-[liste des vraies annonces trouvees avec plateforme et prix]
+Cherche les prix actuels de cet objet sur ebay.com, leboncoin.fr et catawiki.com en utilisant web_search.
+Fais exactement 2 recherches :
+1. "{objet} prix"
+2. "{objet} vendre"
 
-PRIX DU MARCHE
-Prix bas : Xeuros
-Prix moyen : Xeuros
-Prix haut : Xeuros
+Apres tes recherches, reponds avec UNIQUEMENT ce bloc de texte, sans rien d'autre avant ou apres :
 
-RECOMMANDATION
-Prix de revente conseille : Xeuros
-Prix achat maximum : Xeuros
-Marge estimee : X pourcent
-
-DEMANDE
-[FORTE ou MOYENNE ou FAIBLE] - [explication courte]
-
-MEILLEURES PLATEFORMES
-[liste des plateformes]
-
-CONSEIL
-[une seule phrase de conseil]
-
-SEUIL
-[uniquement le chiffre du prix achat maximum, ex: 45]"""
+---DEBUT---
+OBJET: {objet}
+ANNONCES:
+[liste chaque annonce trouvee : site | prix | etat]
+PRIX BAS: [chiffre]
+PRIX MOYEN: [chiffre]
+PRIX HAUT: [chiffre]
+REVENTE: [chiffre]
+ACHAT MAX: [chiffre]
+MARGE: [chiffre]
+DEMANDE: [FORTE ou MOYENNE ou FAIBLE]
+RAISON: [une phrase]
+PLATEFORMES: [liste]
+CONSEIL: [une phrase]
+---FIN---"""
 
 
 async def analyze_sourcing(photo_url: str, caption: str = "") -> str:
     try:
-        # Télécharger la photo
+        # Telecharger la photo
         async with httpx.AsyncClient(timeout=30) as http:
             resp = await http.get(photo_url)
             resp.raise_for_status()
             image_data = base64.standard_b64encode(resp.content).decode("utf-8")
+        media_type = "image/png" if "png" in resp.headers.get("content-type","") else "image/jpeg"
 
-        content_type = resp.headers.get("content-type", "image/jpeg")
-        media_type = "image/png" if "png" in content_type else "image/jpeg"
-
-        # Appel Claude avec web_search
-        response = client.messages.create(
+        # ETAPE 1 : Identification de l'objet (sans web search, rapide)
+        r1 = client.messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=2000,
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            max_tokens=100,
             messages=[{
                 "role": "user",
                 "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": image_data
-                        }
-                    },
-                    {
-                        "type": "text",
-                        "text": SOURCING_PROMPT.format(
-                            caption=caption if caption else "Aucune information supplémentaire"
-                        )
-                    }
+                    {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": image_data}},
+                    {"type": "text", "text": STEP1_PROMPT.format(caption=caption or "aucune")}
                 ]
             }]
         )
+        objet = r1.content[0].text.strip().split("\n")[0]
 
-        # Extraire uniquement le dernier bloc texte
-        final_text = ""
-        for block in response.content:
+        # ETAPE 2 : Recherche web + analyse prix
+        r2 = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=1500,
+            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            messages=[{
+                "role": "user",
+                "content": STEP2_PROMPT.format(objet=objet)
+            }]
+        )
+
+        # Extraire le dernier bloc texte
+        raw = ""
+        for block in r2.content:
             if hasattr(block, "text") and block.text:
-                final_text = block.text
+                raw = block.text
 
-        if not final_text:
-            return "Analyse non disponible."
-
-        # Reformater proprement avec emojis
-        return _format_response(final_text)
+        # Extraire uniquement ce qui est entre ---DEBUT--- et ---FIN---
+        match = re.search(r'---DEBUT---(.*?)---FIN---', raw, re.DOTALL)
+        if match:
+            data = match.group(1).strip()
+            return _build_message(data, objet)
+        else:
+            # Fallback : parser le texte brut quand meme
+            return _build_message(raw, objet)
 
     except anthropic.APIError as e:
         return f"Erreur API Claude : {str(e)}"
@@ -102,75 +99,75 @@ async def analyze_sourcing(photo_url: str, caption: str = "") -> str:
         return f"Erreur : {str(e)}"
 
 
-def _clean(text: str) -> str:
-    """Supprime tout le Markdown de la réponse Claude."""
-    import re
-    # Supprimer ** gras **
-    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
-    # Supprimer * italique *
-    text = re.sub(r'\*(.+?)\*', r'\1', text)
-    # Supprimer _ italique _
-    text = re.sub(r'_(.+?)_', r'\1', text)
-    # Supprimer # titres
-    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
-    # Supprimer ` code `
-    text = re.sub(r'`(.+?)`', r'\1', text)
-    return text.strip()
+def _extract(text: str, key: str) -> str:
+    """Extrait la valeur d'une cle dans le texte structure."""
+    pattern = rf'{key}\s*:\s*(.+)'
+    m = re.search(pattern, text, re.IGNORECASE)
+    return m.group(1).strip() if m else "?"
 
 
-def _format_response(text: str) -> str:
-    """Nettoie le Markdown et reformate avec emojis."""
-    text = _clean(text)
-    lines = text.strip().split("\n")
-    output = []
+def _extract_annonces(text: str) -> str:
+    """Extrait le bloc annonces."""
+    m = re.search(r'ANNONCES\s*:\s*\n(.*?)(?=PRIX BAS|PRIX MOYEN|\Z)', text, re.DOTALL | re.IGNORECASE)
+    if m:
+        lines = [l.strip() for l in m.group(1).strip().split("\n") if l.strip()]
+        return "\n".join(f"  • {l}" for l in lines[:5])
+    return "  • Voir plateformes recommandees"
 
-    for line in lines:
-        line = line.strip()
-        if not line:
-            output.append("")
-            continue
 
-        # Titres de sections — variantes avec/sans accent, majuscules
-        lu = line.upper()
-        if any(lu.startswith(x) for x in ["OBJET IDENTIFIE", "OBJET IDENTIFIÉ"]):
-            output.append("\n🔎 OBJET IDENTIFIE")
-        elif any(lu.startswith(x) for x in ["ANNONCES TROUV"]):
-            output.append("\n🌐 ANNONCES TROUVEES")
-        elif any(lu.startswith(x) for x in ["PRIX DU MARCH"]):
-            output.append("\n💰 PRIX DU MARCHE")
-        elif lu.startswith("RECOMMANDATION"):
-            output.append("\n✅ RECOMMANDATION")
-        elif lu.startswith("DEMANDE"):
-            output.append("\n📈 DEMANDE")
-        elif any(lu.startswith(x) for x in ["MEILLEURES PLATEFORME", "PLATEFORMES"]):
-            output.append("\n🏆 MEILLEURES PLATEFORMES")
-        elif lu.startswith("CONSEIL"):
-            output.append("\n⚡ CONSEIL")
-        elif lu.startswith("SEUIL"):
-            prix_raw = line.replace("SEUIL", "").replace("seuil", "").replace(":", "").strip()
-            try:
-                import re
-                nums = re.findall(r"[\d]+", prix_raw)
-                prix = nums[0] if nums else "?"
-                output.append(f"\n💡 Seuil decision : {prix} euros maximum")
-            except:
-                output.append(f"\n💡 {line}")
-        elif any(line.lower().startswith(x) for x in ["prix bas", "prix moyen", "prix haut",
-                                                        "prix de revente", "prix achat", "marge"]):
-            output.append(f"• {line}")
-        else:
-            output.append(line)
+def _build_message(data: str, objet: str) -> str:
+    """Construit le message final propre pour Telegram."""
+    # Nettoyer tout markdown
+    data = re.sub(r'\*\*(.+?)\*\*', r'\1', data)
+    data = re.sub(r'\*(.+?)\*', r'\1', data)
+    data = re.sub(r'_(.+?)_', r'\1', data)
+    data = re.sub(r'#{1,6}\s+', '', data)
 
-    # Nettoyer les lignes vides multiples
-    result = []
-    prev_empty = False
-    for line in output:
-        if line == "":
-            if not prev_empty:
-                result.append(line)
-            prev_empty = True
-        else:
-            prev_empty = False
-            result.append(line)
+    objet_final = _extract(data, "OBJET") 
+    if objet_final == "?":
+        objet_final = objet
 
-    return "\n".join(result).strip()
+    annonces = _extract_annonces(data)
+    prix_bas = _extract(data, "PRIX BAS")
+    prix_moyen = _extract(data, "PRIX MOYEN")
+    prix_haut = _extract(data, "PRIX HAUT")
+    revente = _extract(data, "REVENTE")
+    achat_max = _extract(data, "ACHAT MAX")
+    marge = _extract(data, "MARGE")
+    demande = _extract(data, "DEMANDE")
+    raison = _extract(data, "RAISON")
+    plateformes = _extract(data, "PLATEFORMES")
+    conseil = _extract(data, "CONSEIL")
+
+    # Extraire le chiffre du prix max pour le seuil
+    nums = re.findall(r'\d+', achat_max)
+    seuil = nums[0] if nums else "?"
+
+    msg = f"""🔎 OBJET IDENTIFIE
+{objet_final}
+
+🌐 ANNONCES TROUVEES (eBay / LBC / Catawiki)
+{annonces}
+
+💰 PRIX DU MARCHE
+• Prix bas : {prix_bas} euros
+• Prix moyen : {prix_moyen} euros
+• Prix haut : {prix_haut} euros
+
+✅ RECOMMANDATION
+• Prix de revente conseille : {revente} euros
+• Prix achat maximum : {achat_max} euros
+• Marge estimee : {marge}%
+
+📈 DEMANDE
+{demande} - {raison}
+
+🏆 MEILLEURES PLATEFORMES
+{plateformes}
+
+⚡ CONSEIL
+{conseil}
+
+💡 Seuil decision : {seuil} euros maximum"""
+
+    return msg.strip()
