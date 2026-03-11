@@ -32,38 +32,43 @@ Utilise TOUTES les informations fournies dans la legende."""
 
 PROMPT_ANALYSE = """Tu es un expert en achat-revente d'objets d'occasion avec 20 ans d'experience.
 
-Objet : {objet}
-Informations techniques connues : {caption}
+Objet a analyser : {objet}
+Informations connues : {caption}
 
-ETAPE 1 - Fais 2 recherches OBLIGATOIRES :
+ETAPE 1 — Fais 2 recherches web sur eBay en priorite :
 
-Recherche 1 : "{requete_1} site:ebay.fr"
-But : trouver les annonces actives ET les objets deja vendus sur eBay France.
-C'est ta source principale et la plus fiable.
+Recherche 1 : "{requete_1} eBay"
+But : trouver toutes les annonces eBay actives en France et dans le monde.
+Releve : prix de chaque annonce, etat, pays vendeur, titre exact.
 
-Recherche 2 : "{requete_2} prix"
-But : croiser avec leboncoin.fr et catawiki.com pour affiner les prix.
+Recherche 2 : "{requete_1} eBay sold completed"
+But : trouver les ventes eBay reellement terminees et les prix auxquels les objets ont ete vendus.
+C'est la donnee la plus fiable pour connaitre le vrai prix de marche.
 
-Si peu de resultats sur eBay, essaie : "{requete_3} ebay"
+Apres eBay, croise avec leboncoin.fr et catawiki.com si tu trouves des resultats.
 
-ETAPE 2 - Reponds avec ce format exact, sans markdown, sans asterisques :
+IMPORTANT : Releve un maximum d'annonces avec leurs prix exacts.
+Convertis les dollars en euros (1$ = 0.92 euros).
 
-OBJET: [nom complet precis]
+ETAPE 2 — Reponds UNIQUEMENT avec ce bloc exact, sans markdown, sans asterisques :
+
+OBJET: [nom precis et complet]
 ANNONCES:
-[site | prix euros | VENDU ou EN VENTE ou ADJUGE | etat]
-BAS: [chiffre entier]
-MOYEN: [chiffre entier]
-HAUT: [chiffre entier]
-REVENTE: [chiffre entier conseille]
+[site | prix euros | VENDU ou EN VENTE | etat | pays si hors France]
+BAS: [prix le plus bas trouve en entier]
+MOYEN: [moyenne calculee sur toutes les annonces en entier]
+HAUT: [prix le plus haut trouve en entier]
+REVENTE: [prix de revente conseille base sur les ventes reelles]
+NB_ANNONCES: [nombre total d'annonces trouvees]
 DEMANDE: [FORTE ou MOYENNE ou FAIBLE]
 VITESSE: [RAPIDE ou NORMALE ou LENTE]
-RAISON: [une phrase sur la tendance marche]
+RAISON: [phrase sur tendance marche basee sur les donnees trouvees]
 POIDS: [{poids}]
 DIMENSIONS: [{dimensions}]
 ENCOMBREMENT: [PETIT ou MOYEN ou GRAND]
 FACILITE_ENVOI: [FACILE ou MOYEN ou DIFFICILE]
-PLATEFORMES: [liste ordonnee par pertinence]
-CONSEIL: [conseil pratique base sur les donnees trouvees]"""
+PLATEFORMES: [liste ordonnee, eBay en premier]
+CONSEIL: [conseil base sur les vraies annonces trouvees]"""
 
 
 def _extraire_dimensions(caption: str):
@@ -242,6 +247,7 @@ def _build(data, objet_fallback, dims_connues="", poids_connu=""):
     prix_moyen   = _num(data, "MOYEN")
     prix_haut    = _num(data, "HAUT")
     prix_revente = _num(data, "REVENTE")
+    nb_annonces  = _get(data, "NB_ANNONCES") or "?"
 
     if prix_bas == 0 and prix_moyen == 0:
         # Chercher des montants dans le texte libre
@@ -326,7 +332,7 @@ def _build(data, objet_fallback, dims_connues="", poids_connu=""):
 
     msg = (
         f"🔎 OBJET IDENTIFIE\n{objet}\n\n"
-        f"🌐 ANNONCES TROUVEES\n"
+        f"🌐 ANNONCES TROUVEES ({nb_annonces} references)\n"
         f"✅ Vendu  🔨 Adjuge  🔵 En vente\n"
         f"{annonces}\n\n"
         f"💰 PRIX DU MARCHE\n"
