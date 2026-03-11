@@ -582,16 +582,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     t = text.lower()
-    if any(w in t for w in ["rapport", "bilan"]):
-        periode = "mois" if "mois" in t else "semaine"
-        thinking = await update.message.reply_text("📊 Génération...")
-        result = await generate_report(periode)
-        await thinking.edit_text(result, parse_mode="Markdown")
-    elif any(w in t for w in ["stock", "inventaire"]):
-        thinking = await update.message.reply_text("📦 Chargement...")
-        result = await get_stock_summary()
-        await thinking.edit_text(result, parse_mode="Markdown")
-    elif session.get("mode") == "flux_attente_prix_achat":
+
+    # ── MODES ACTIFS EN PRIORITÉ ─────────────────────────
+    if session.get("mode") == "flux_attente_prix_achat":
         try:
             prix_achat = float(re.findall(r'[\d.,]+', update.message.text)[0].replace(',', '.'))
             session["flux_prix_achat"] = prix_achat
@@ -618,6 +611,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except (IndexError, ValueError):
             await update.message.reply_text("⚠️ Tapez juste un nombre, ex: 45")
 
+    elif any(w in t for w in ["rapport", "bilan"]):
+        periode = "mois" if "mois" in t else "semaine"
+        thinking = await update.message.reply_text("📊 Génération...")
+        result = await generate_report(periode)
+        await thinking.edit_text(result, parse_mode="Markdown")
+    elif any(w in t for w in ["stock", "inventaire"]):
+        thinking = await update.message.reply_text("📦 Chargement...")
+        result = await get_stock_summary()
+        await thinking.edit_text(result, parse_mode="Markdown")
     elif session.get("mode") == "flux_attente_prix":
         try:
             nouveau_prix = int(re.findall(r'\d+', update.message.text)[0])
