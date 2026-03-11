@@ -144,6 +144,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     try:
         result = await analyze_sourcing(file_url, caption)
+        # Stocker URL et légende pour le callback "acheter_ok"
+        session["last_photo_url"] = file_url
+        session["last_caption"] = caption
         await thinking_msg.delete()
         await send_long_message(msg, result, parse_mode=None)
         keyboard = [[
@@ -201,7 +204,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             caption = session.get("vendre_caption", "")
             prix_achat = session.get("vendre_prix_achat", 0)
             source = session.get("vendre_source", "")
-            record_id = await archiver_airtable(vdata, ref, photos, caption, prix_achat, source)
+            record_id = await archiver_airtable(vdata, ref, [], caption, prix_achat, source)
             session["mode"] = None
             session["vendre_data"] = None
             await thinking.edit_text(
