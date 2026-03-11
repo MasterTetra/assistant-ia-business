@@ -8,6 +8,7 @@ import httpx
 import base64
 import re
 import asyncio
+import time
 import json
 from datetime import datetime
 from config.settings import (
@@ -16,6 +17,20 @@ from config.settings import (
 )
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+async def _claude_call_with_retry(func, *args, **kwargs):
+    """Retry automatique si rate limit 429."""
+    for attempt in range(4):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            if "429" in str(e) and attempt < 3:
+                wait = 15 * (attempt + 1)
+                await asyncio.sleep(wait)
+            else:
+                raise
+
+
 AIRTABLE_URL = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}"
 HEADERS_AT = {"Authorization": f"Bearer {AIRTABLE_API_KEY}", "Content-Type": "application/json"}
 
@@ -78,7 +93,7 @@ async def analyser_et_generer(photos: list, caption: str, objet_identifie: str) 
         except:
             pass
 
-    await asyncio.sleep(2)
+    await asyncio.sleep(5)
 
     # Appel Claude avec recherche web
     messages_content = image_content + [{
@@ -91,7 +106,7 @@ async def analyser_et_generer(photos: list, caption: str, objet_identifie: str) 
         )
     }]
 
-    response = client.messages.create(
+    response = await _claude_call_with_retry(client.messages.create,
         model=CLAUDE_MODEL,
         max_tokens=1500,
         tools=[{"type": "web_search_20250305", "name": "web_search"}],
