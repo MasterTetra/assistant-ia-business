@@ -67,6 +67,11 @@ def get_session(user_id: int) -> dict:
             "vendre_source": "",
             "last_photo_url": "",
             "last_caption": "",
+            "flux_data": None,
+            "flux_photo_url": "",
+            "flux_caption": "",
+            "flux_prix_achat": 0,
+            "flux_source": "",
             "lot_photos": [],
             "lot_resultats": [],
             "lot_index_courant": 0,
@@ -249,6 +254,93 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session["vendre_data"] = None
         await query.edit_message_text("❌ Vente annulée.")
 
+    elif data == "flux_continuer":
+        session = get_session(query.from_user.id)
+        data_flux = session.get("flux_data")
+        if not data_flux:
+            await query.edit_message_text("⚠️ Session expirée. Renvoie une photo.")
+            return
+        thinking = await query.message.reply_text("📝 Génération de l'annonce...")
+        try:
+            from modules.flux import generer_annonce, formater_annonce
+            data_flux = await generer_annonce(data_flux)
+            session["flux_data"] = data_flux
+            session["mode"] = "flux_validation"
+            await thinking.delete()
+            annonce_txt = formater_annonce(data_flux)
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Valider", callback_data="flux_valider"),
+                    InlineKeyboardButton("✏️ Modifier prix", callback_data="flux_mod_prix"),
+                ],
+                [
+                    InlineKeyboardButton("✏️ Modifier annonce", callback_data="flux_mod_annonce"),
+                    InlineKeyboardButton("❌ Annuler", callback_data="flux_annuler"),
+                ]
+            ])
+            if len(annonce_txt) > 3500:
+                await query.message.reply_text(annonce_txt[:3500])
+                await query.message.reply_text(annonce_txt[3500:], reply_markup=keyboard)
+            else:
+                await query.message.reply_text(annonce_txt, reply_markup=keyboard)
+        except Exception as e:
+            await thinking.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
+
+    elif data == "flux_valider":
+        session = get_session(query.from_user.id)
+        data_flux = session.get("flux_data")
+        if not data_flux:
+            await query.edit_message_text("⚠️ Session expirée.")
+            return
+        thinking = await query.message.reply_text("💾 Archivage...")
+        try:
+            from modules.flux import generer_ref, archiver
+            ref = await generer_ref()
+            prix_achat = session.get("flux_prix_achat", 0)
+            source = session.get("flux_source", "")
+            ok = await archiver(data_flux, ref, prix_achat, source)
+            session["mode"] = None
+            session["flux_data"] = None
+            if ok:
+                await thinking.edit_text(
+                    f"✅ ARCHIVE\n\n"
+                    f"Référence : {ref}\n"
+                    f"Titre eBay : {data_flux['titre_ebay']}\n"
+                    f"Prix : {data_flux['prix_revente']} euros\n\n"
+                    f"📋 Annonce LBC/Vinted :\n"
+                    f"{data_flux['titre_lbc']}\n\n"
+                    f"Quand vendu → /statut {ref} vendu eBay"
+                )
+            else:
+                await thinking.edit_text("⚠️ Erreur Airtable — vérifiez la base.")
+        except Exception as e:
+            await thinking.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
+
+    elif data == "flux_mod_prix":
+        session = get_session(query.from_user.id)
+        session["mode"] = "flux_attente_prix"
+        await query.edit_message_text(
+            "💶 Nouveau prix de vente eBay ?\n"
+            "Tapez juste le chiffre, ex: 45"
+        )
+
+    elif data == "flux_mod_annonce":
+        session = get_session(query.from_user.id)
+        session["mode"] = "flux_attente_modif"
+        await query.edit_message_text(
+            "✏️ Que voulez-vous modifier ?\n\n"
+            "Exemples :\n"
+            "• titre: Porte-clé Renault Sport damier métal neuf\n"
+            "• description: [votre texte complet]\n"
+            "• etat: neuf sous blister d'origine"
+        )
+
+    elif data == "flux_annuler":
+        session = get_session(query.from_user.id)
+        session["mode"] = None
+        session["flux_data"] = None
+        await query.edit_message_text("❌ Annulé.")
+
     elif data.startswith("lot_ok|"):
         index = int(data.split("|")[1])
         session = get_session(query.from_user.id)
@@ -424,6 +516,60 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         thinking = await update.message.reply_text("📦 Chargement...")
         result = await get_stock_summary()
         await thinking.edit_text(result, parse_mode="Markdown")
+    elif session.get("mode") == "flux_attente_prix":
+        try:
+            nouveau_prix = int(re.findall(r'\d+', update.message.text)[0])
+            data_flux = session.get("flux_data", {})
+            data_flux["prix_revente"] = nouveau_prix
+            session["flux_data"] = data_flux
+            session["mode"] = "flux_validation"
+            from modules.flux import formater_annonce
+            annonce_txt = formater_annonce(data_flux)
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Valider", callback_data="flux_valider"),
+                    InlineKeyboardButton("✏️ Modifier prix", callback_data="flux_mod_prix"),
+                ],
+                [
+                    InlineKeyboardButton("✏️ Modifier annonce", callback_data="flux_mod_annonce"),
+                    InlineKeyboardButton("❌ Annuler", callback_data="flux_annuler"),
+                ]
+            ])
+            await update.message.reply_text(annonce_txt, reply_markup=keyboard)
+        except:
+            await update.message.reply_text("⚠️ Tapez juste un nombre, ex: 45")
+
+    elif session.get("mode") == "flux_attente_modif":
+        modif = update.message.text.strip()
+        data_flux = session.get("flux_data", {})
+        if modif.lower().startswith("titre:"):
+            data_flux["titre_ebay"] = modif[6:].strip()
+            data_flux["titre_lbc"] = modif[6:].strip()[:70]
+        elif modif.lower().startswith("description:"):
+            data_flux["description"] = modif[12:].strip()
+        elif modif.lower().startswith("etat:"):
+            data_flux["caption"] = modif[5:].strip()
+        session["flux_data"] = data_flux
+        session["mode"] = "flux_validation"
+        from modules.flux import formater_annonce
+        annonce_txt = formater_annonce(data_flux)
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Valider", callback_data="flux_valider"),
+                InlineKeyboardButton("✏️ Modifier prix", callback_data="flux_mod_prix"),
+            ],
+            [
+                InlineKeyboardButton("✏️ Modifier annonce", callback_data="flux_mod_annonce"),
+                InlineKeyboardButton("❌ Annuler", callback_data="flux_annuler"),
+            ]
+        ])
+        await update.message.reply_text(annonce_txt, reply_markup=keyboard)
+
+    elif session.get("mode") == "flux_attente_source":
+        session["flux_source"] = update.message.text.strip()
+        session["mode"] = "flux_validation"
+        await update.message.reply_text(f"✅ Source : {session['flux_source']}")
+
     elif session.get("mode") == "lot_modif_prix":
         try:
             nouveau_prix = int(re.findall(r'\d+', update.message.text)[0])
