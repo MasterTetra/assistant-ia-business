@@ -67,9 +67,20 @@ async def analyze_sourcing(photo_url: str, caption: str = "") -> str:
 
         # Extraire le bloc
         match = re.search(r'---DEBUT---(.*?)---FIN---', raw, re.DOTALL)
-        data = match.group(1).strip() if match else raw
+        if match:
+            data = match.group(1).strip()
+        else:
+            # Pas de balises — utiliser tout le texte brut
+            data = raw
 
-        return _build_message(data)
+        result = _build_message(data)
+
+        # Si echec, renvoyer le texte brut pour diagnostic
+        if "Aucune annonce" in result or "non identifie" in result.lower():
+            # Extraire juste les infos cles du texte libre
+            result = _parse_free_text(raw, caption)
+
+        return result
 
     except anthropic.APIError as e:
         return f"Erreur API Claude : {str(e)}"
@@ -152,3 +163,79 @@ def _build_message(data):
         f"⚡ CONSEIL\n{conseil}\n\n"
         f"💡 Seuil decision : {int(achat_max)} euros maximum"
     )
+
+
+def _parse_free_text(raw: str, caption: str = "") -> str:
+    """
+    Fallback : quand Claude ne respecte pas le format,
+    on extrait les prix directement depuis le texte libre.
+    """
+    # Nettoyer
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', raw)
+    text = re.sub(r'\*(.+?)\*', r'\1', text)
+    text = re.sub(r'#{1,6}\s+', '', text)
+
+    # Chercher tous les montants en euros dans le texte
+    prix_trouves = re.findall(r'(\d[\d\s]*)\s*(?:€|euros?)', text, re.IGNORECASE)
+    montants = []
+    for p in prix_trouves:
+        try:
+            val = float(p.replace(" ", ""))
+            if 1 < val < 100000:
+                montants.append(val)
+        except:
+            pass
+
+    # Chercher le nom de l'objet depuis la légende ou première ligne
+    objet = caption.replace("«", "").replace("»", "").strip() if caption else "Objet analyse"
+    if not objet:
+        lines = [l.strip() for l in text.split("\n") if l.strip()]
+        objet = lines[0] if lines else "Objet analyse"
+
+    if montants:
+        montants_uniq = sorted(set(montants))
+        prix_bas    = int(montants_uniq[0])
+        prix_haut   = int(montants_uniq[-1])
+        prix_moyen  = int(sum(montants_uniq) / len(montants_uniq))
+        prix_revente = int(prix_moyen * 0.85)
+        achat_max   = int(prix_revente * 0.5)
+        marge_euros = prix_revente - achat_max
+        marge_pct   = round(marge_euros / achat_max * 100) if achat_max > 0 else 0
+
+        # Extraire quelques lignes avec prix pour les annonces
+        annonce_lines = []
+        for line in text.split("\n"):
+            if re.search(r'\d+\s*(?:€|euros?)', line, re.IGNORECASE) and len(line.strip()) > 5:
+                clean = line.strip()[:80]
+                annonce_lines.append(f"  • {clean}")
+            if len(annonce_lines) >= 4:
+                break
+
+        annonces_str = "\n".join(annonce_lines) if annonce_lines else "  • Voir plateformes recommandees"
+
+        return (
+            f"🔎 OBJET IDENTIFIE\n{objet}\n\n"
+            f"🌐 ANNONCES TROUVEES\n"
+            f"✅ Vendu  🔨 Adjuge  🔵 En vente\n"
+            f"{annonces_str}\n\n"
+            f"💰 PRIX DU MARCHE\n"
+            f"• Prix bas    : {prix_bas} euros\n"
+            f"• Prix moyen  : {prix_moyen} euros\n"
+            f"• Prix haut   : {prix_haut} euros\n\n"
+            f"✅ RECOMMANDATION\n"
+            f"• Prix de revente conseille : {prix_revente} euros\n"
+            f"• Prix achat maximum        : {achat_max} euros\n"
+            f"• Marge brute               : +{marge_euros} euros (+{marge_pct}%)\n\n"
+            f"💡 Seuil decision : {achat_max} euros maximum\n\n"
+            f"ℹ️ Analyse basee sur les donnees trouvees en ligne"
+        )
+    else:
+        # Aucun prix trouve du tout — retourner le texte brut propre
+        lines = [l.strip() for l in text.split("\n") if l.strip()]
+        resume = "\n".join(lines[:10])
+        return (
+            f"🔎 ANALYSE : {objet}\n\n"
+            f"{resume}\n\n"
+            f"⚠️ Prix non trouves automatiquement.\n"
+            f"Conseil : ajoutez le nom exact de l'artiste/marque en legende."
+        )
