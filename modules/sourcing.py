@@ -8,46 +8,43 @@ from config.settings import ANTHROPIC_API_KEY, CLAUDE_MODEL
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-SOURCING_PROMPT = """Tu es un expert en achat-revente d'objets d'occasion avec 20 ans d'expérience.
+SOURCING_PROMPT = """Tu es un expert en achat-revente d'objets d'occasion.
+INFOS SUR L'OBJET : {caption}
 
-INFORMATIONS SUPPLÉMENTAIRES SUR L'OBJET : {caption}
+ETAPE 1 : Identifie l'objet sur la photo.
+ETAPE 2 : Fais 2 recherches web pour trouver les prix reels sur Vinted, Leboncoin, eBay, Etsy, Catawiki.
 
-MISSION :
-1. Identifie précisément l'objet sur la photo
-2. Utilise l'outil web_search pour chercher les VRAIS prix actuels sur Vinted, Leboncoin, eBay France, Etsy, Catawiki, Interenchères
-3. Fais 2 recherches maximum :
-   - Recherche 1 : "[nom objet] vendre prix" 
-   - Recherche 2 : "[nom objet] occasion prix"
-
-IMPORTANT : Ta réponse finale doit OBLIGATOIREMENT suivre ce format exact, sans aucune déviation :
+REGLE ABSOLUE : Ta reponse finale doit contenir UNIQUEMENT ces blocs dans cet ordre exact.
+N'utilise PAS de Markdown (pas de **, pas de *, pas de #).
+Utilise EXACTEMENT ces titres en majuscules :
 
 OBJET IDENTIFIE
-[Nom précis, marque, époque, état]
+[description precise]
 
 ANNONCES TROUVEES
-[3-5 vraies annonces : Plateforme - Prix - État]
+[liste des vraies annonces trouvees avec plateforme et prix]
 
 PRIX DU MARCHE
-Prix bas : XXX euros
-Prix moyen : XXX euros
-Prix haut : XXX euros
+Prix bas : Xeuros
+Prix moyen : Xeuros
+Prix haut : Xeuros
 
 RECOMMANDATION
-Prix de revente conseille : XXX euros
-Prix achat maximum : XXX euros
-Marge estimee : XX pourcent
+Prix de revente conseille : Xeuros
+Prix achat maximum : Xeuros
+Marge estimee : X pourcent
 
 DEMANDE
-[FORTE / MOYENNE / FAIBLE] - [raison courte]
+[FORTE ou MOYENNE ou FAIBLE] - [explication courte]
 
 MEILLEURES PLATEFORMES
-[liste]
+[liste des plateformes]
 
 CONSEIL
-[1 phrase pratique]
+[une seule phrase de conseil]
 
 SEUIL
-[prix achat maximum en chiffre uniquement]"""
+[uniquement le chiffre du prix achat maximum, ex: 45]"""
 
 
 async def analyze_sourcing(photo_url: str, caption: str = "") -> str:
@@ -105,54 +102,75 @@ async def analyze_sourcing(photo_url: str, caption: str = "") -> str:
         return f"Erreur : {str(e)}"
 
 
+def _clean(text: str) -> str:
+    """Supprime tout le Markdown de la réponse Claude."""
+    import re
+    # Supprimer ** gras **
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    # Supprimer * italique *
+    text = re.sub(r'\*(.+?)\*', r'\1', text)
+    # Supprimer _ italique _
+    text = re.sub(r'_(.+?)_', r'\1', text)
+    # Supprimer # titres
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    # Supprimer ` code `
+    text = re.sub(r'`(.+?)`', r'\1', text)
+    return text.strip()
+
+
 def _format_response(text: str) -> str:
-    """Reformate la réponse brute en message Telegram propre sans Markdown."""
+    """Nettoie le Markdown et reformate avec emojis."""
+    text = _clean(text)
     lines = text.strip().split("\n")
     output = []
-    
+
     for line in lines:
         line = line.strip()
         if not line:
+            output.append("")
             continue
-        
-        # Titres de sections
-        if line.startswith("OBJET IDENTIFIE"):
-            output.append("\n🔎 OBJET IDENTIFIE")
-        elif line.startswith("ANNONCES TROUVEES"):
-            output.append("\n🌐 ANNONCES TROUVEES")
-        elif line.startswith("PRIX DU MARCHE"):
-            output.append("\n💰 PRIX DU MARCHE")
-        elif line.startswith("RECOMMANDATION"):
-            output.append("\n✅ RECOMMANDATION")
-        elif line.startswith("DEMANDE"):
-            output.append("\n📈 DEMANDE")
-        elif line.startswith("MEILLEURES PLATEFORMES"):
-            output.append("\n🏆 MEILLEURES PLATEFORMES")
-        elif line.startswith("CONSEIL"):
-            output.append("\n⚡ CONSEIL")
-        elif line.startswith("SEUIL"):
-            # Extraire le prix pour le seuil
-            prix = line.replace("SEUIL", "").replace(":", "").strip()
-            try:
-                prix_float = float(''.join(c for c in prix if c.isdigit() or c == '.'))
-                output.append(f"\n💡 Seuil decision : {prix_float} euros maximum")
-            except:
-                output.append(f"\n💡 Seuil : {prix}")
-        else:
-            # Contenu normal
-            if line.startswith("Prix bas"):
-                output.append(f"• {line}")
-            elif line.startswith("Prix moyen"):
-                output.append(f"• {line}")
-            elif line.startswith("Prix haut"):
-                output.append(f"• {line}")
-            elif line.startswith("Prix de revente"):
-                output.append(f"• {line}")
-            elif line.startswith("Prix achat"):
-                output.append(f"• {line}")
-            elif line.startswith("Marge"):
-                output.append(f"• {line}")
-            else:
-                output.append(line)
 
-    return "\n".join(output).strip()
+        # Titres de sections — variantes avec/sans accent, majuscules
+        lu = line.upper()
+        if any(lu.startswith(x) for x in ["OBJET IDENTIFIE", "OBJET IDENTIFIÉ"]):
+            output.append("\n🔎 OBJET IDENTIFIE")
+        elif any(lu.startswith(x) for x in ["ANNONCES TROUV"]):
+            output.append("\n🌐 ANNONCES TROUVEES")
+        elif any(lu.startswith(x) for x in ["PRIX DU MARCH"]):
+            output.append("\n💰 PRIX DU MARCHE")
+        elif lu.startswith("RECOMMANDATION"):
+            output.append("\n✅ RECOMMANDATION")
+        elif lu.startswith("DEMANDE"):
+            output.append("\n📈 DEMANDE")
+        elif any(lu.startswith(x) for x in ["MEILLEURES PLATEFORME", "PLATEFORMES"]):
+            output.append("\n🏆 MEILLEURES PLATEFORMES")
+        elif lu.startswith("CONSEIL"):
+            output.append("\n⚡ CONSEIL")
+        elif lu.startswith("SEUIL"):
+            prix_raw = line.replace("SEUIL", "").replace("seuil", "").replace(":", "").strip()
+            try:
+                import re
+                nums = re.findall(r"[\d]+", prix_raw)
+                prix = nums[0] if nums else "?"
+                output.append(f"\n💡 Seuil decision : {prix} euros maximum")
+            except:
+                output.append(f"\n💡 {line}")
+        elif any(line.lower().startswith(x) for x in ["prix bas", "prix moyen", "prix haut",
+                                                        "prix de revente", "prix achat", "marge"]):
+            output.append(f"• {line}")
+        else:
+            output.append(line)
+
+    # Nettoyer les lignes vides multiples
+    result = []
+    prev_empty = False
+    for line in output:
+        if line == "":
+            if not prev_empty:
+                result.append(line)
+            prev_empty = True
+        else:
+            prev_empty = False
+            result.append(line)
+
+    return "\n".join(result).strip()
