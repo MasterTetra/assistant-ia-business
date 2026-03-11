@@ -59,6 +59,12 @@ def get_session(user_id: int) -> dict:
             "photos_buffer": [],
             "descriptions_buffer": [],
             "pending_listing_ref": None,
+            "vendre_data": None,
+            "vendre_ref": None,
+            "vendre_photos": [],
+            "vendre_caption": "",
+            "vendre_prix_achat": 0,
+            "vendre_source": "",
         }
     return user_sessions[user_id]
 
@@ -98,7 +104,7 @@ async def aide(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📝 */annonce [ref]* → Générer annonce de vente\n"
         "📊 */rapport* → Rapport 7 jours\n"
         "📊 */rapport mensuel* → Bilan du mois\n"
-        "💰 */finances* → Bilan financier complet\n\n"
+        "💰 */finances* → Bilan financier complet\n""🔄 */statut [ref] [statut] [plateforme]* → Mettre à jour un statut\n\n"
         "💡 *Flow achat :*\n"
         "1. /acheter\n"
         "2. Envoie tes photos\n"
@@ -176,6 +182,54 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await thinking.edit_text(f"⚠️ Erreur : {e}")
     elif data.startswith("annuler_pub|"):
         await query.edit_message_text("❌ Publication annulée.")
+
+    elif data == "vendre_valider":
+        session = get_session(query.from_user.id)
+        vdata = session.get("vendre_data")
+        ref = session.get("vendre_ref")
+        if not vdata or not ref:
+            await query.edit_message_text("⚠️ Session expirée. Relance /vendre.")
+            return
+        thinking = await query.message.reply_text("📡 Archivage et publication en cours...")
+        try:
+            from modules.vendre import archiver_airtable
+            photos = session.get("vendre_photos", [])
+            caption = session.get("vendre_caption", "")
+            prix_achat = session.get("vendre_prix_achat", 0)
+            source = session.get("vendre_source", "")
+            record_id = await archiver_airtable(vdata, ref, photos, caption, prix_achat, source)
+            session["mode"] = None
+            session["vendre_data"] = None
+            await thinking.edit_text(
+                f"✅ ARCHIVE ET PUBLIE\n\n"
+                f"Référence gestion : {ref}\n"
+                f"Titre eBay : {vdata['titre_ebay']}\n"
+                f"Prix eBay : {vdata['prix_ebay']} euros\n\n"
+                f"Fiche Airtable créée.\n\n"
+                f"💡 Une fois vendu :\n"
+                f"/statut {ref} vendu eBay"
+            )
+        except Exception as e:
+            await thinking.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
+
+    elif data == "vendre_modifier":
+        await query.edit_message_text(
+            "✏️ QUE VOULEZ-VOUS MODIFIER ?\n\n"
+            "Tapez ce que vous souhaitez changer, par exemple :\n"
+            "• titre: Lampe César Baldaccini Daum Argos cristal fumé\n"
+            "• prix: 950\n"
+            "• etat: très bon état, manque abat-jour\n"
+            "• description: [votre texte]\n\n"
+            "Tapez vos modifications :"
+        )
+        session = get_session(query.from_user.id)
+        session["mode"] = "vendre_modification"
+
+    elif data == "vendre_annuler":
+        session = get_session(query.from_user.id)
+        session["mode"] = None
+        session["vendre_data"] = None
+        await query.edit_message_text("❌ Vente annulée.")
 
 async def cmd_acheter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = get_session(update.effective_user.id)
@@ -304,6 +358,43 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         thinking = await update.message.reply_text("📦 Chargement...")
         result = await get_stock_summary()
         await thinking.edit_text(result, parse_mode="Markdown")
+    elif session.get("mode") == "vendre_modification":
+        # Appliquer les modifications demandées par l'utilisateur
+        vdata = session.get("vendre_data", {})
+        ref = session.get("vendre_ref", "")
+        modif = update.message.text.strip()
+
+        # Modifier les champs selon ce que l'utilisateur écrit
+        if modif.lower().startswith("titre:"):
+            vdata["titre_ebay"] = modif[6:].strip()
+            vdata["titre_lbc"] = modif[6:].strip()[:70]
+        elif modif.lower().startswith("prix:"):
+            try:
+                vdata["prix_ebay"] = int(re.findall(r'\d+', modif)[0])
+            except:
+                pass
+        elif modif.lower().startswith("etat:"):
+            vdata["etat"] = modif[5:].strip()
+        elif modif.lower().startswith("description:"):
+            vdata["description"] = modif[12:].strip()
+        else:
+            # Modification libre → régénérer avec Claude
+            vdata["conseil"] = modif  # Stocker la demande
+
+        session["vendre_data"] = vdata
+        session["mode"] = "vendre_attente_validation"
+
+        from modules.vendre import formater_fiche
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        fiche = formater_fiche(vdata, ref)
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Valider et publier", callback_data="vendre_valider"),
+                InlineKeyboardButton("✏️ Modifier encore", callback_data="vendre_modifier"),
+            ],
+            [InlineKeyboardButton("❌ Annuler", callback_data="vendre_annuler")]
+        ])
+        await update.message.reply_text(fiche, reply_markup=keyboard)
     elif any(w in t for w in ["finance", "marge", "argent"]):
         thinking = await update.message.reply_text("💰 Calcul...")
         result = await get_financial_summary()
@@ -327,6 +418,147 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
 
+
+
+async def cmd_vendre(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /vendre — Active le mode vente complet
+    Envoyer ensuite les photos avec légende
+    """
+    session = get_session(update.effective_user.id)
+    session["mode"] = "vendre_attente_photos"
+    session["vendre_photos"] = []
+    session["vendre_caption"] = ""
+    session["vendre_data"] = None
+    session["vendre_ref"] = None
+    await update.message.reply_text(
+        "🛍️ MODE VENTE ACTIVE\n\n"
+        "Envoie maintenant les photos de l'objet.\n"
+        "Ajoute en légende les infos que tu connais :\n\n"
+        "Exemple : César Baldaccini lampe cristal Daum - très bon état - manque abat-jour\n\n"
+        "Quand toutes les photos sont envoyées → /analyser"
+    )
+
+async def cmd_analyser(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /analyser — Déclenche l'analyse complète après photos
+    """
+    session = get_session(update.effective_user.id)
+
+    if session.get("mode") != "vendre_attente_photos":
+        await update.message.reply_text("⚠️ Utilise /vendre d'abord pour activer le mode vente.")
+        return
+
+    if not session.get("vendre_photos"):
+        await update.message.reply_text("⚠️ Aucune photo reçue. Envoie au moins une photo.")
+        return
+
+    thinking = await update.message.reply_text(
+        "🔍 Analyse en cours...\n"
+        "• Identification de l'objet\n"
+        "• Recherche des prix sur eBay\n"
+        "• Génération de l'annonce\n\n"
+        "⏳ Cela peut prendre 30 secondes..."
+    )
+
+    try:
+        from modules.vendre import analyser_et_generer, formater_fiche, generer_ref_gestion
+        from modules.sourcing import analyze_sourcing
+
+        photos = session["vendre_photos"]
+        caption = session["vendre_caption"]
+
+        # Étape 1 : identification rapide
+        await thinking.edit_text("🔍 Identification de l'objet...")
+        objet_id = caption or "objet inconnu"
+        if photos:
+            try:
+                import anthropic as anth
+                import httpx, base64
+                from config.settings import ANTHROPIC_API_KEY, CLAUDE_MODEL
+                cl = anth.Anthropic(api_key=ANTHROPIC_API_KEY)
+                async with httpx.AsyncClient(timeout=30) as http:
+                    r = await http.get(photos[0])
+                    img = base64.standard_b64encode(r.content).decode()
+                    mt = "image/jpeg"
+                r1 = cl.messages.create(
+                    model=CLAUDE_MODEL,
+                    max_tokens=80,
+                    messages=[{"role": "user", "content": [
+                        {"type": "image", "source": {"type": "base64", "media_type": mt, "data": img}},
+                        {"type": "text", "text": f"Infos : {caption}\nIdentifie cet objet en 1 ligne précise : [Marque/Artiste] [type] [matière] [couleur/style]"}
+                    ]}]
+                )
+                objet_id = r1.content[0].text.strip().split("\n")[0]
+            except:
+                pass
+
+        # Étape 2 : analyse complète + génération annonce
+        await thinking.edit_text("📊 Recherche des prix marché sur eBay...")
+        data = await analyser_et_generer(photos, caption, objet_id)
+
+        # Étape 3 : générer référence de gestion
+        ref = await generer_ref_gestion()
+        session["vendre_data"] = data
+        session["vendre_ref"] = ref
+        session["mode"] = "vendre_attente_validation"
+
+        # Afficher la fiche complète
+        from modules.vendre import formater_fiche
+        fiche = formater_fiche(data, ref)
+
+        await thinking.delete()
+
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Valider et publier", callback_data="vendre_valider"),
+                InlineKeyboardButton("✏️ Modifier", callback_data="vendre_modifier"),
+            ],
+            [InlineKeyboardButton("❌ Annuler", callback_data="vendre_annuler")]
+        ])
+
+        # Découper si trop long
+        if len(fiche) > 3500:
+            await update.message.reply_text(fiche[:3500])
+            await update.message.reply_text(fiche[3500:], reply_markup=keyboard)
+        else:
+            await update.message.reply_text(fiche, reply_markup=keyboard)
+
+    except Exception as e:
+        await thinking.edit_text(f"⚠️ Erreur analyse : {str(e)[:200]}")
+
+
+async def cmd_statut(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /statut REF-2026-0001 vendu eBay
+    Met à jour le statut d'un produit + plateforme si vendu
+    """
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "Usage : /statut [REF] [statut] [plateforme optionnelle]\n\n"
+            "Exemples :\n"
+            "/statut REF-2026-0001 vendu eBay\n"
+            "/statut REF-2026-0001 vendu Leboncoin\n"
+            "/statut REF-2026-0001 expedie\n"
+            "/statut REF-2026-0001 en ligne\n\n"
+            "Statuts disponibles :\n"
+            "achete, en stockage, en renovation, en ligne, vendu, expedie, livre"
+        )
+        return
+
+    ref = context.args[0].upper()
+    new_status = context.args[1].lower()
+    plateforme = " ".join(context.args[2:]) if len(context.args) > 2 else ""
+
+    thinking = await update.message.reply_text(f"🔄 Mise à jour {ref}...")
+    try:
+        from modules.stock import update_status
+        result = await update_status(ref, new_status, plateforme)
+        await thinking.edit_text(result, parse_mode="Markdown")
+    except Exception as e:
+        await thinking.edit_text(f"⚠️ Erreur: {e}")
+
 # ─── LANCEMENT COMPATIBLE TOUTES VERSIONS PYTHON ─────────
 def main():
     if not TELEGRAM_TOKEN:
@@ -344,6 +576,9 @@ def main():
     app.add_handler(CommandHandler("annonce", cmd_annonce))
     app.add_handler(CommandHandler("rapport", cmd_rapport))
     app.add_handler(CommandHandler("finances", cmd_finances))
+    app.add_handler(CommandHandler("statut", cmd_statut))
+    app.add_handler(CommandHandler("vendre", cmd_vendre))
+    app.add_handler(CommandHandler("analyser", cmd_analyser))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(CallbackQueryHandler(handle_callback))
