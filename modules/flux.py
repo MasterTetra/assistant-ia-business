@@ -28,32 +28,37 @@ PALIERS = [
 ]
 
 # ─── PROMPT ÉTAPE 1 : ANALYSE MARCHÉ ──────────────────────
-PROMPT_ANALYSE = """Tu es un expert en achat-revente d'objets d'occasion.
+PROMPT_ANALYSE = """Tu es un expert en achat-revente d'objets d'occasion avec 20 ans d'experience.
 
 OBJET : {objet}
 INFOS : {caption}
 
-Fais 2 recherches :
-1. "{objet_court} prix eBay"
-2. "{objet_court} vendu sold eBay"
+Fais 2 recherches OBLIGATOIRES :
+1. "{objet_court} eBay prix" — annonces actives
+2. "{objet_court} eBay sold vendu" — UNIQUEMENT les ventes déjà conclues
 
-Reponds UNIQUEMENT avec ce format, sans markdown :
+IMPORTANT :
+- Les ventes conclues (SOLD/VENDU) sont la référence principale pour PRIX_REVENTE
+- Ne pas confondre annonces actives (espoir du vendeur) avec ventes réelles (prix du marché)
+- Si objet rare ou artistique : cherche aussi sur catawiki.com et 1stdibs.com
+
+Reponds UNIQUEMENT avec ce format exact, sans markdown :
 
 OBJET: [nom précis et complet]
 ANNONCES:
 [eBay ou LBC | prix euros | VENDU ou EN VENTE | état]
-PRIX_BAS: [chiffre]
-PRIX_MOYEN: [chiffre]
-PRIX_HAUT: [chiffre]
-PRIX_REVENTE: [prix conseillé basé sur ventes réelles]
-NB_ANNONCES: [nombre]
+PRIX_BAS: [prix le plus bas des ventes CONCLUES]
+PRIX_MOYEN: [moyenne des ventes CONCLUES]
+PRIX_HAUT: [prix le plus haut des ventes CONCLUES]
+PRIX_REVENTE: [prix conseillé basé sur ventes réelles — PAS les annonces actives]
+NB_ANNONCES: [nombre total trouvé]
 DEMANDE: [FORTE ou MOYENNE ou FAIBLE]
 VITESSE: [RAPIDE ou NORMALE ou LENTE]
 POIDS: [estimation en grammes]
 DIMENSIONS: [{dimensions}]
 ENCOMBREMENT: [PETIT ou MOYEN ou GRAND]
 ENVOI: [FACILE ou MOYEN ou DIFFICILE]
-RAISON: [phrase sur tendance marché]"""
+RAISON: [phrase courte sur tendance marché]"""
 
 # ─── PROMPT ÉTAPE 2 : GÉNÉRATION ANNONCE ──────────────────
 PROMPT_ANNONCE = """Tu es un expert en vente sur eBay et Leboncoin.
@@ -247,15 +252,11 @@ async def generer_annonce(data: dict, etat: str = "") -> dict:
 
 
 def formater_analyse(data: dict) -> str:
-    """Formate le message d'analyse marché."""
+    """Formate le message d'analyse marché — sans prix d'achat (inconnu)."""
     em_d = {"FORTE":"🔥 FORTE","MOYENNE":"🟡 MOYENNE","FAIBLE":"🔵 FAIBLE"}
     em_v = {"RAPIDE":"⚡ RAPIDE","NORMALE":"🕐 NORMALE","LENTE":"🐢 LENTE"}
     em_e = {"PETIT":"📦 PETIT","MOYEN":"🗃️ MOYEN","GRAND":"🏠 GRAND"}
     em_env = {"FACILE":"✅ FACILE","MOYEN":"🟡 MOYEN","DIFFICILE":"⚠️ DIFFICILE"}
-
-    avertissement = ""
-    if not data["marge_ok"]:
-        avertissement = f"\n⚠️ MARGE INSUFFISANTE — Seuil {data['label']} non atteint\n"
 
     return (
         f"🔎 OBJET IDENTIFIE\n{data['objet']}\n\n"
@@ -275,11 +276,31 @@ def formater_analyse(data: dict) -> str:
         f"• Demande : {em_d.get(data['demande'].upper(), data['demande'])}\n"
         f"• Vitesse : {em_v.get(data['vitesse'].upper(), data['vitesse'])}\n"
         + (f"• {data['raison']}\n" if data['raison'] else "") +
-        f"\n{'✅' if data['marge_ok'] else '⚠️'} RENTABILITE ({data['label']})\n"
-        f"• Revente conseillée : {data['prix_revente']} euros\n"
-        f"• Achat maximum      : {data['achat_max']} euros\n"
-        f"• Marge estimée      : +{data['marge']} euros (+{data['marge_pct']}%)\n"
-        f"{avertissement}"
+        f"\n💡 ESTIMATION\n"
+        f"• Prix de revente conseillé : {data['prix_revente']} euros\n"
+        f"• Prix d'achat maximum      : {data['achat_max']} euros ({data['label']})\n"
+    )
+
+
+def formater_rentabilite(data: dict, prix_achat: float) -> str:
+    """Calcule et formate la rentabilité une fois le prix d'achat connu."""
+    marge = data["prix_revente"] - prix_achat
+    marge_pct = round(marge / prix_achat * 100) if prix_achat > 0 else 0
+    achat_max = data["achat_max"]
+    ok = prix_achat <= achat_max
+
+    if ok:
+        status = f"✅ BON ACHAT — sous le seuil de {achat_max} euros"
+    else:
+        depassement = round((prix_achat - achat_max) / achat_max * 100)
+        status = f"⚠️ AU-DESSUS du seuil ({depassement}% de plus que les {achat_max} euros conseillés)"
+
+    return (
+        f"💰 ANALYSE RENTABILITE\n"
+        f"• Prix d'achat       : {prix_achat} euros\n"
+        f"• Prix revente cible  : {data['prix_revente']} euros\n"
+        f"• Marge brute         : +{marge} euros (+{marge_pct}%)\n"
+        f"• {status}\n"
     )
 
 
