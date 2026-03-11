@@ -21,26 +21,38 @@ Reponds avec UNE seule ligne, rien d'autre."""
 STEP2_PROMPT = """Tu es un expert en achat-revente d'objets d'occasion.
 Objet a analyser : {objet}
 
-INSTRUCTIONS :
-1. Fais 2 recherches web pour trouver les prix actuels de cet objet
-2. Cherche sur ebay.com, leboncoin.fr et catawiki.com en priorite
-3. Note tous les prix trouves en euros
+INSTRUCTIONS - Fais exactement 3 recherches web dans cet ordre :
 
-Reponds UNIQUEMENT avec ce bloc structure, sans texte avant ni apres :
+RECHERCHE 1 : "{objet} vendu prix" sur ebay.fr
+But : trouver les ventes TERMINEES et reellement conclues sur eBay France.
+Cherche les completed listings / objets vendus.
+
+RECHERCHE 2 : "{objet} prix" sur leboncoin.fr et catawiki.com
+But : trouver les annonces actives actuelles et les resultats d'encheres passes.
+
+RECHERCHE 3 : "{objet} adjugé resultat" sur interencheres.com ou drouot.com
+But : trouver les prix d'adjudication en ventes aux encheres.
+
+Pour chaque annonce trouvee, precise si c'est :
+- VENDU (vente reellement conclue) - le plus fiable
+- EN VENTE (annonce active) - prix demande
+- ADJUGE (resultat encheres) - prix final paye
+
+Reponds UNIQUEMENT avec ce bloc, sans rien avant ni apres :
 
 ---DEBUT---
 OBJET: {objet}
 ANNONCES:
-[liste chaque annonce : site | prix en euros | etat]
-PRIX_BAS: [nombre entier en euros uniquement, ex: 150]
-PRIX_MOYEN: [nombre entier en euros uniquement, ex: 300]
-PRIX_HAUT: [nombre entier en euros uniquement, ex: 500]
-PRIX_REVENTE: [nombre entier en euros uniquement, ex: 350]
-PRIX_ACHAT_MAX: [nombre entier en euros uniquement, ex: 180]
+[liste chaque resultat : site | prix euros | VENDU/EN VENTE/ADJUGE | etat]
+PRIX_BAS: [nombre entier, ex: 150]
+PRIX_MOYEN: [nombre entier, ex: 300]
+PRIX_HAUT: [nombre entier, ex: 500]
+PRIX_REVENTE: [nombre entier conseille base sur les ventes reelles]
+PRIX_ACHAT_MAX: [nombre entier maximum a payer pour rester rentable]
 DEMANDE: [FORTE ou MOYENNE ou FAIBLE]
-RAISON: [une phrase courte]
-PLATEFORMES: [liste des meilleures plateformes pour vendre]
-CONSEIL: [une seule phrase de conseil pratique]
+RAISON: [une phrase basee sur les ventes trouvees]
+PLATEFORMES: [meilleures plateformes selon les resultats]
+CONSEIL: [conseil base sur les vraies donnees de vente]
 ---FIN---"""
 
 
@@ -116,12 +128,24 @@ def _extract_number(text: str, key: str) -> float:
 
 
 def _extract_annonces(text: str) -> str:
-    """Extrait le bloc annonces."""
+    """Extrait le bloc annonces avec distinction ventes reelles / annonces actives."""
     m = re.search(r'ANNONCES\s*:\s*\n(.*?)(?=PRIX_BAS|\Z)', text, re.DOTALL | re.IGNORECASE)
-    if m:
-        lines = [l.strip() for l in m.group(1).strip().split("\n") if l.strip()]
-        return "\n".join(f"  • {l}" for l in lines[:5])
-    return "  • Voir plateformes recommandees"
+    if not m:
+        return "  • Voir plateformes recommandees"
+    
+    lines = [l.strip() for l in m.group(1).strip().split("\n") if l.strip()]
+    result = []
+    for line in lines[:6]:
+        line_up = line.upper()
+        if "VENDU" in line_up:
+            result.append(f"  ✅ {line}")   # Vente reelle conclue
+        elif "ADJUGE" in line_up:
+            result.append(f"  🔨 {line}")   # Resultat encheres
+        elif "EN VENTE" in line_up:
+            result.append(f"  🔵 {line}")   # Annonce active
+        else:
+            result.append(f"  • {line}")
+    return "\n".join(result) if result else "  • Voir plateformes recommandees"
 
 
 def _build_message(data: str, objet: str) -> str:
@@ -173,7 +197,8 @@ def _build_message(data: str, objet: str) -> str:
         f"🔎 OBJET IDENTIFIE\n"
         f"{objet_final}\n"
         f"\n"
-        f"🌐 ANNONCES TROUVEES (eBay / LBC / Catawiki)\n"
+        f"🌐 ANNONCES TROUVEES\n"
+        f"✅ Vendu  🔨 Adjuge  🔵 En vente\n"
         f"{annonces}\n"
         f"\n"
         f"💰 PRIX DU MARCHE\n"
