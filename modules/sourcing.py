@@ -1,6 +1,8 @@
 """
 MODULE SOURCING — Analyse technique + marché complète
-Règles de rentabilité par palier + analyse encombrement/liquidité
+- Dimensions extraites automatiquement de la légende
+- Recherche web ciblée
+- Règles de rentabilité par palier
 """
 import anthropic
 import httpx
@@ -11,9 +13,7 @@ from config.settings import ANTHROPIC_API_KEY, CLAUDE_MODEL
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-# ─── RÈGLES DE RENTABILITÉ PAR PALIER ────────────────────
 PALIERS = [
-    # (achat_min, achat_max, multiplicateur, marge_min_pct, label)
     (0,    10,   3.0, 200, "x3 minimum"),
     (10,   50,   2.5, 150, "x2.5 minimum"),
     (50,   100,  2.0, 100, "x2 minimum"),
@@ -22,51 +22,90 @@ PALIERS = [
     (1000, 9999, 1.4,  40, "x1.4 minimum"),
 ]
 
-def get_regle(achat: float):
-    for (amin, amax, mult, marge_min, label) in PALIERS:
-        if amin <= achat < amax:
-            return mult, marge_min, label
-    return 1.4, 40, "x1.4 minimum"
+PROMPT_ID = """Analyse cet objet avec toutes les informations disponibles.
+Informations fournies : {caption}
 
-# ─── PROMPT IDENTIFICATION ────────────────────────────────
-PROMPT_ID = """Analyse cet objet en expert en achat-revente.
-Info supplementaire : {caption}
+Reponds en 1 seule ligne tres precise :
+[Marque/Artiste] [type exact] [matiere] [couleur/style] [epoque] [etat] [dimensions si connues]
 
-Reponds en 1 seule ligne :
-[Marque/Artiste] [type] [matiere] [epoque/style] [etat]"""
+Utilise TOUTES les informations fournies dans la legende."""
 
-# ─── PROMPT ANALYSE COMPLÈTE ─────────────────────────────
 PROMPT_ANALYSE = """Tu es un expert en achat-revente d'objets d'occasion avec 20 ans d'experience.
-Objet : {objet}
 
-MISSION EN 2 ETAPES :
+Objet : {objet}
+Informations techniques connues : {caption}
 
 ETAPE 1 - Fais 2 recherches web :
-- Recherche 1 : "{objet} prix vente ebay.fr leboncoin.fr"
-- Recherche 2 : "{objet} vendu adjuge catawiki interencheres"
+- Recherche 1 : "{objet_court} prix vente" sur ebay.fr et leboncoin.fr
+- Recherche 2 : "{objet_court} vendu adjuge" sur catawiki.com et interencheres.com
 
-ETAPE 2 - Reponds avec ce format exact, sans markdown, chiffres entiers :
+ETAPE 2 - Reponds avec ce format exact, sans markdown :
 
-OBJET: [nom precis]
+OBJET: [nom complet precis]
 ANNONCES:
 [site | prix euros | VENDU ou EN VENTE ou ADJUGE | etat]
 BAS: [chiffre]
 MOYEN: [chiffre]
 HAUT: [chiffre]
-REVENTE: [chiffre conseille base sur ventes reelles]
+REVENTE: [chiffre conseille]
 DEMANDE: [FORTE ou MOYENNE ou FAIBLE]
 VITESSE: [RAPIDE ou NORMALE ou LENTE]
-RAISON: [phrase sur la demande et tendance marche]
-POIDS: [estimation en grammes ou kg]
-DIMENSIONS: [estimation L x l x H en cm]
-ENCOMBREMENT: [PETIT moins de 30cm ou MOYEN 30-60cm ou GRAND plus de 60cm]
+RAISON: [phrase sur tendance marche actuelle]
+POIDS: [{poids}]
+DIMENSIONS: [{dimensions}]
+ENCOMBREMENT: [PETIT ou MOYEN ou GRAND]
 FACILITE_ENVOI: [FACILE ou MOYEN ou DIFFICILE]
-PLATEFORMES: [liste ordonnee par pertinence]
-CONSEIL: [conseil base sur les vraies donnees]"""
+PLATEFORMES: [liste ordonnee]
+CONSEIL: [conseil pratique base sur les donnees]"""
+
+
+def _extraire_dimensions(caption: str):
+    """Extrait dimensions et poids depuis la légende."""
+    dims = ""
+    poids = "A estimer"
+
+    if not caption:
+        return dims, poids
+
+    # Chercher pattern dimensions : 12cm * 8cm * 29cm ou 12x8x29 ou 12 x 8 x 29
+    m = re.search(
+        r'(\d+[\.,]?\d*)\s*(?:cm|mm|m)?\s*[x\*×]\s*(\d+[\.,]?\d*)\s*(?:cm|mm|m)?\s*[x\*×]\s*(\d+[\.,]?\d*)\s*(cm|mm|m)?',
+        caption, re.IGNORECASE
+    )
+    if m:
+        d1, d2, d3 = m.group(1), m.group(2), m.group(3)
+        unite = m.group(4) or "cm"
+        dims = f"{d1} x {d2} x {d3} {unite}"
+        # Estimer encombrement
+        try:
+            max_dim = max(float(d1), float(d2), float(d3))
+            if max_dim < 30:
+                encombrement = "PETIT"
+            elif max_dim < 60:
+                encombrement = "MOYEN"
+            else:
+                encombrement = "GRAND"
+        except:
+            encombrement = "MOYEN"
+    else:
+        # Chercher dimension seule
+        m2 = re.search(r'(\d+[\.,]?\d*)\s*(cm|mm)', caption, re.IGNORECASE)
+        if m2:
+            dims = f"{m2.group(1)} {m2.group(2)}"
+
+    # Chercher poids
+    m_poids = re.search(r'(\d+[\.,]?\d*)\s*(kg|g|grammes?|kilos?)', caption, re.IGNORECASE)
+    if m_poids:
+        poids = f"{m_poids.group(1)} {m_poids.group(2)}"
+
+    return dims, poids
 
 
 async def analyze_sourcing(photo_url: str, caption: str = "") -> str:
     try:
+        # Extraire dimensions depuis la légende AVANT tout
+        dims_connues, poids_connu = _extraire_dimensions(caption)
+
         # Télécharger photo
         async with httpx.AsyncClient(timeout=30) as http:
             resp = await http.get(photo_url)
@@ -74,31 +113,41 @@ async def analyze_sourcing(photo_url: str, caption: str = "") -> str:
             image_data = base64.standard_b64encode(resp.content).decode("utf-8")
         media_type = "image/png" if "png" in resp.headers.get("content-type", "") else "image/jpeg"
 
-        # Appel 1 : identification (photo, léger)
+        # Appel 1 : identification précise avec toutes les infos dispo
         r1 = client.messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=80,
+            max_tokens=120,
             messages=[{
                 "role": "user",
                 "content": [
                     {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": image_data}},
-                    {"type": "text", "text": PROMPT_ID.format(caption=caption or "aucune")}
+                    {"type": "text", "text": PROMPT_ID.format(caption=caption or "aucune information")}
                 ]
             }]
         )
         objet = r1.content[0].text.strip().split("\n")[0]
-        objet = re.sub(r'[«»""]', '', objet).strip()
+        objet = re.sub(r'[«»""\*#_]', '', objet).strip()
+
+        # Version courte pour la recherche (sans dimensions)
+        objet_court = re.sub(r'\d+\s*(?:cm|mm|x|\*)', '', objet).strip()
+        objet_court = re.sub(r'\s+', ' ', objet_court).strip()
 
         await asyncio.sleep(2)
 
-        # Appel 2 : recherche web + analyse complète (texte seul)
+        # Appel 2 : recherche web + analyse
         r2 = client.messages.create(
             model=CLAUDE_MODEL,
             max_tokens=1000,
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
             messages=[{
                 "role": "user",
-                "content": PROMPT_ANALYSE.format(objet=objet)
+                "content": PROMPT_ANALYSE.format(
+                    objet=objet,
+                    objet_court=objet_court,
+                    caption=caption or "aucune",
+                    poids=poids_connu if poids_connu != "A estimer" else "A estimer selon photo",
+                    dimensions=dims_connues if dims_connues else "A estimer selon photo"
+                )
             }]
         )
 
@@ -111,7 +160,7 @@ async def analyze_sourcing(photo_url: str, caption: str = "") -> str:
         raw = re.sub(r'\*(.+?)\*', r'\1', raw)
         raw = re.sub(r'#{1,6}\s+', '', raw)
 
-        return _build(raw, objet)
+        return _build(raw, objet, dims_connues, poids_connu)
 
     except anthropic.APIError as e:
         return f"Erreur API Claude : {str(e)}"
@@ -145,25 +194,38 @@ def _annonces(text):
     return "\n".join(result) if result else "  • Voir plateformes recommandees"
 
 
-def _build(data, objet_fallback):
-    objet       = _get(data, "OBJET") or objet_fallback
-    annonces    = _annonces(data)
-    plateformes = _get(data, "PLATEFORMES") or "eBay, Leboncoin, Catawiki"
-    conseil     = _get(data, "CONSEIL") or "Verifiez l'etat avant achat."
-    demande     = _get(data, "DEMANDE") or "MOYENNE"
-    vitesse     = _get(data, "VITESSE") or "NORMALE"
-    raison      = _get(data, "RAISON") or ""
-    poids       = _get(data, "POIDS") or "Non estime"
-    dimensions  = _get(data, "DIMENSIONS") or "Non estimees"
+def _build(data, objet_fallback, dims_connues="", poids_connu=""):
+    objet        = _get(data, "OBJET") or objet_fallback
+    annonces     = _annonces(data)
+    plateformes  = _get(data, "PLATEFORMES") or "eBay, Leboncoin, Catawiki"
+    conseil      = _get(data, "CONSEIL") or "Verifiez l'etat avant achat."
+    demande      = _get(data, "DEMANDE") or "MOYENNE"
+    vitesse      = _get(data, "VITESSE") or "NORMALE"
+    raison       = _get(data, "RAISON") or ""
+
+    # Dimensions : priorité à ce qui est fourni dans la légende
+    poids        = poids_connu if poids_connu and poids_connu != "A estimer" else (_get(data, "POIDS") or "Non estime")
+    dimensions   = dims_connues if dims_connues else (_get(data, "DIMENSIONS") or "Non estimees")
     encombrement = _get(data, "ENCOMBREMENT") or "MOYEN"
-    facilite    = _get(data, "FACILITE_ENVOI") or "MOYEN"
+    facilite     = _get(data, "FACILITE_ENVOI") or "MOYEN"
+
+    # Si on a les dimensions, recalculer l'encombrement
+    if dims_connues:
+        nums = re.findall(r'\d+', dims_connues)
+        if nums:
+            max_dim = max(float(n) for n in nums)
+            if max_dim < 30:
+                encombrement = "PETIT"
+            elif max_dim < 60:
+                encombrement = "MOYEN"
+            else:
+                encombrement = "GRAND"
 
     prix_bas     = _num(data, "BAS")
     prix_moyen   = _num(data, "MOYEN")
     prix_haut    = _num(data, "HAUT")
     prix_revente = _num(data, "REVENTE")
 
-    # Fallback : extraire les montants du texte libre
     if prix_bas == 0 and prix_moyen == 0:
         montants = []
         for val in re.findall(r'(\d[\d\s]*)\s*(?:€|euros?)', data, re.IGNORECASE):
@@ -190,13 +252,10 @@ def _build(data, objet_fallback):
     if prix_revente == 0:
         prix_revente = int(prix_moyen * 0.85)
 
-    # ── Calcul achat max selon paliers ───────────────────
-    # On estime l'achat max selon le prix de revente et les paliers
-    # On teste chaque palier pour trouver le bon multiplicateur
+    # Calcul achat max selon paliers
     achat_max = 0
     multiplicateur_applique = 1.4
     label_regle = "x1.4 minimum"
-
     for (amin, amax, mult, marge_min, label) in PALIERS:
         achat_estime = prix_revente / mult
         if amin <= achat_estime < amax:
@@ -204,92 +263,68 @@ def _build(data, objet_fallback):
             multiplicateur_applique = mult
             label_regle = label
             break
-
     if achat_max == 0:
         achat_max = int(prix_revente / 1.4)
-        multiplicateur_applique = 1.4
-        label_regle = "x1.4 minimum"
 
     marge_euros = int(prix_revente - achat_max)
     marge_pct   = round(marge_euros / achat_max * 100) if achat_max > 0 else 0
 
-    # ── Analyse flexibilité (objet proche du seuil) ──────
-    # Si on est proche du seuil, on autorise une légère souplesse
-    # selon l'encombrement et la vitesse de vente
-    flexibilite = ""
-    achat_max_souple = achat_max
-    seuil_proche = prix_revente / (multiplicateur_applique * 0.9)  # 10% de souplesse
-
+    # Souplesse selon encombrement et vitesse
     encombrement_up = encombrement.upper()
     vitesse_up = vitesse.upper()
+    flexibilite = ""
+    achat_max_souple = achat_max
 
     if "RAPIDE" in vitesse_up and "PETIT" in encombrement_up:
-        # Petit objet qui se vend vite → souplesse +15%
         achat_max_souple = int(achat_max * 1.15)
-        flexibilite = f"✅ Souplesse +15% accordee (petit objet, vente rapide) → jusqu'a {achat_max_souple} euros"
+        flexibilite = f"✅ Souplesse +15% (petit + vente rapide) → jusqu'a {achat_max_souple} euros"
     elif "RAPIDE" in vitesse_up and "MOYEN" in encombrement_up:
-        # Taille moyenne mais vente rapide → souplesse +10%
         achat_max_souple = int(achat_max * 1.10)
-        flexibilite = f"✅ Souplesse +10% accordee (vente rapide) → jusqu'a {achat_max_souple} euros"
+        flexibilite = f"✅ Souplesse +10% (vente rapide) → jusqu'a {achat_max_souple} euros"
     elif "LENTE" in vitesse_up or "GRAND" in encombrement_up:
-        # Grand objet ou vente lente → pas de souplesse, seuil strict
-        flexibilite = f"⚠️ Aucune souplesse (objet encombrant ou vente lente) → seuil strict"
+        flexibilite = "⚠️ Seuil strict (encombrant ou vente lente)"
 
-    # ── Emojis ───────────────────────────────────────────
-    demande_up = demande.upper()
-    if "FORTE" in demande_up:    emoji_demande = "🔥 FORTE"
-    elif "FAIBLE" in demande_up: emoji_demande = "🔵 FAIBLE"
-    else:                        emoji_demande = "🟡 MOYENNE"
+    # Emojis
+    if "FORTE" in demande.upper():    emoji_d = "🔥 FORTE"
+    elif "FAIBLE" in demande.upper(): emoji_d = "🔵 FAIBLE"
+    else:                             emoji_d = "🟡 MOYENNE"
 
-    if "RAPIDE" in vitesse_up:   emoji_vitesse = "⚡ RAPIDE"
-    elif "LENTE" in vitesse_up:  emoji_vitesse = "🐢 LENTE"
-    else:                        emoji_vitesse = "🕐 NORMALE"
+    if "RAPIDE" in vitesse_up:        emoji_v = "⚡ RAPIDE"
+    elif "LENTE" in vitesse_up:       emoji_v = "🐢 LENTE"
+    else:                             emoji_v = "🕐 NORMALE"
 
-    encombrement_emoji = {
-        "PETIT": "📦 PETIT (facile a stocker)",
-        "MOYEN": "🗃️ MOYEN",
-        "GRAND": "🏠 GRAND (encombrant)"
-    }.get(encombrement_up.split()[0] if encombrement_up else "MOYEN", "🗃️ MOYEN")
+    enc_map = {"PETIT": "📦 PETIT (facile a stocker)", "MOYEN": "🗃️ MOYEN", "GRAND": "🏠 GRAND (encombrant)"}
+    emoji_enc = enc_map.get(encombrement_up.split()[0] if encombrement_up else "MOYEN", "🗃️ MOYEN")
 
-    facilite_emoji = {
-        "FACILE": "✅ FACILE",
-        "MOYEN":  "🟡 MOYEN",
-        "DIFFICILE": "⚠️ DIFFICILE (fragile/lourd)"
-    }.get(facilite.upper(), "🟡 MOYEN")
+    fac_map = {"FACILE": "✅ FACILE", "MOYEN": "🟡 MOYEN", "DIFFICILE": "⚠️ DIFFICILE"}
+    emoji_fac = fac_map.get(facilite.upper(), "🟡 MOYEN")
 
-    return (
+    msg = (
         f"🔎 OBJET IDENTIFIE\n{objet}\n\n"
-
         f"🌐 ANNONCES TROUVEES\n"
         f"✅ Vendu  🔨 Adjuge  🔵 En vente\n"
         f"{annonces}\n\n"
-
         f"💰 PRIX DU MARCHE\n"
         f"• Prix bas    : {int(prix_bas)} euros\n"
         f"• Prix moyen  : {int(prix_moyen)} euros\n"
         f"• Prix haut   : {int(prix_haut)} euros\n\n"
-
         f"📦 ANALYSE LOGISTIQUE\n"
-        f"• Poids estimé    : {poids}\n"
-        f"• Dimensions      : {dimensions}\n"
-        f"• Encombrement    : {encombrement_emoji}\n"
-        f"• Envoi           : {facilite_emoji}\n\n"
-
+        f"• Poids       : {poids}\n"
+        f"• Dimensions  : {dimensions}\n"
+        f"• Encombrement: {emoji_enc}\n"
+        f"• Envoi       : {emoji_fac}\n\n"
         f"📈 ANALYSE MARCHE\n"
-        f"• Demande         : {emoji_demande}\n"
-        f"• Vitesse de vente : {emoji_vitesse}\n"
-        f"• {raison}\n\n"
-
-        f"✅ RECOMMANDATION ({label_regle})\n"
+        f"• Demande          : {emoji_d}\n"
+        f"• Vitesse de vente : {emoji_v}\n"
+        + (f"• {raison}\n" if raison else "") +
+        f"\n✅ RECOMMANDATION ({label_regle})\n"
         f"• Prix de revente conseille : {int(prix_revente)} euros\n"
         f"• Prix achat maximum        : {int(achat_max)} euros\n"
         f"• Marge brute               : +{marge_euros} euros (+{marge_pct}%)\n"
         + (f"• {flexibilite}\n" if flexibilite else "") +
-        f"\n"
-        f"🏆 MEILLEURES PLATEFORMES\n{plateformes}\n\n"
-
+        f"\n🏆 MEILLEURES PLATEFORMES\n{plateformes}\n\n"
         f"⚡ CONSEIL\n{conseil}\n\n"
-
         f"💡 Seuil decision : {int(achat_max)} euros maximum"
         + (f" (ou {achat_max_souple} euros avec souplesse)" if achat_max_souple != achat_max else "")
     )
+    return msg
