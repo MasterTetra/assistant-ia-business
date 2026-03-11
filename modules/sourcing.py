@@ -106,7 +106,48 @@ async def analyze_sourcing(photo_url: str, caption: str = "") -> str:
         match = re.search(r'---DEBUT---(.*?)---FIN---', raw, re.DOTALL)
         data = match.group(1).strip() if match else raw
 
-        return _build_message(data, objet)
+        result = _build_message(data, objet)
+
+        # Si l'extraction a echoue (prix tous a 0), relancer avec prompt simplifie
+        if "Analyse incomplete" in result:
+            r3 = client.messages.create(
+                model=CLAUDE_MODEL,
+                max_tokens=1000,
+                tools=[{"type": "web_search_20250305", "name": "web_search"}],
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        f"Quel est le prix de vente de : {objet} ?\n"
+                        f"Cherche sur ebay.fr, leboncoin.fr, catawiki.com.\n"
+                        f"Donne moi les prix trouves sous ce format exact sans markdown :\n"
+                        f"---DEBUT---\n"
+                        f"OBJET: {objet}\n"
+                        f"ANNONCES:\n"
+                        f"[une annonce par ligne : site | prix | statut | etat]\n"
+                        f"PRIX_BAS: [chiffre]\n"
+                        f"PRIX_MOYEN: [chiffre]\n"
+                        f"PRIX_HAUT: [chiffre]\n"
+                        f"PRIX_REVENTE: [chiffre]\n"
+                        f"PRIX_ACHAT_MAX: [chiffre]\n"
+                        f"DEMANDE: [FORTE ou MOYENNE ou FAIBLE]\n"
+                        f"RAISON: [une phrase]\n"
+                        f"PLATEFORMES: [liste]\n"
+                        f"CONSEIL: [une phrase]\n"
+                        f"---FIN---"
+                    )
+                }]
+            )
+            raw3 = ""
+            for block in r3.content:
+                if hasattr(block, "text") and block.text:
+                    raw3 = block.text
+            raw3 = re.sub(r'\*\*(.+?)\*\*', r'\1', raw3)
+            raw3 = re.sub(r'\*(.+?)\*', r'\1', raw3)
+            match3 = re.search(r'---DEBUT---(.*?)---FIN---', raw3, re.DOTALL)
+            data3 = match3.group(1).strip() if match3 else raw3
+            result = _build_message(data3, objet)
+
+        return result
 
     except anthropic.APIError as e:
         return f"Erreur API Claude : {str(e)}"
