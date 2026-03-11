@@ -35,31 +35,34 @@ PROMPT_ANALYSE = """Tu es un expert en achat-revente d'objets d'occasion avec 20
 Objet : {objet}
 Informations techniques connues : {caption}
 
-ETAPE 1 - Fais 2 recherches dans cet ordre OBLIGATOIRE :
-- Recherche 1 : "{requete_1} prix" — cherche des annonces actives et ventes terminees
-- Recherche 2 : "{requete_2} vendu" — cherche specifiquement des ventes realisees
+ETAPE 1 - Fais 2 recherches OBLIGATOIRES :
 
-Si peu de resultats, essaie aussi : "{requete_3} prix vente"
+Recherche 1 : "{requete_1} site:ebay.fr"
+But : trouver les annonces actives ET les objets deja vendus sur eBay France.
+C'est ta source principale et la plus fiable.
 
-IMPORTANT : Cherche sur ebay.fr, leboncoin.fr, catawiki.com, selency.fr, pamono.com, 1stdibs.com
+Recherche 2 : "{requete_2} prix"
+But : croiser avec leboncoin.fr et catawiki.com pour affiner les prix.
 
-ETAPE 2 - Reponds avec ce format exact, sans markdown :
+Si peu de resultats sur eBay, essaie : "{requete_3} ebay"
+
+ETAPE 2 - Reponds avec ce format exact, sans markdown, sans asterisques :
 
 OBJET: [nom complet precis]
 ANNONCES:
 [site | prix euros | VENDU ou EN VENTE ou ADJUGE | etat]
-BAS: [chiffre]
-MOYEN: [chiffre]
-HAUT: [chiffre]
-REVENTE: [chiffre conseille base sur les ventes reelles]
+BAS: [chiffre entier]
+MOYEN: [chiffre entier]
+HAUT: [chiffre entier]
+REVENTE: [chiffre entier conseille]
 DEMANDE: [FORTE ou MOYENNE ou FAIBLE]
 VITESSE: [RAPIDE ou NORMALE ou LENTE]
-RAISON: [phrase sur tendance marche actuelle]
+RAISON: [une phrase sur la tendance marche]
 POIDS: [{poids}]
 DIMENSIONS: [{dimensions}]
 ENCOMBREMENT: [PETIT ou MOYEN ou GRAND]
 FACILITE_ENVOI: [FACILE ou MOYEN ou DIFFICILE]
-PLATEFORMES: [liste ordonnee par pertinence pour cet objet]
+PLATEFORMES: [liste ordonnee par pertinence]
 CONSEIL: [conseil pratique base sur les donnees trouvees]"""
 
 
@@ -241,11 +244,12 @@ def _build(data, objet_fallback, dims_connues="", poids_connu=""):
     prix_revente = _num(data, "REVENTE")
 
     if prix_bas == 0 and prix_moyen == 0:
+        # Chercher des montants dans le texte libre
         montants = []
-        for val in re.findall(r'(\d[\d\s]*)\s*(?:€|euros?)', data, re.IGNORECASE):
+        for val in re.findall(r'(\d[\d\s]*)\s*(?:€|euros?|\$)', data, re.IGNORECASE):
             try:
                 n = float(val.replace(" ", ""))
-                if 1 < n < 100000:
+                if 5 < n < 100000:
                     montants.append(n)
             except:
                 pass
@@ -256,11 +260,18 @@ def _build(data, objet_fallback, dims_connues="", poids_connu=""):
             prix_moyen   = int(sum(montants) / len(montants))
             prix_revente = int(prix_moyen * 0.85)
         else:
+            # Pas de prix trouvés — afficher ce qu'on sait + conseil
             return (
-                f"🔎 {objet}\n\n"
-                f"⚠️ Aucun prix trouve sur eBay, LBC et Catawiki.\n"
-                f"Objet rare ou peu reference en ligne.\n\n"
-                f"💡 Cherchez manuellement sur Catawiki et 1stDibs."
+                f"🔎 OBJET IDENTIFIE\n{objet}\n\n"
+                f"⚠️ Aucune annonce trouvee automatiquement.\n\n"
+                f"💡 CONSEILS POUR MIEUX ANALYSER :\n"
+                f"• Ajoutez en legende : marque, artiste, matiere, epoque\n"
+                f"• Exemple : \"César Baldaccini lampe cristal Daum 1970\"\n\n"
+                f"🔍 RECHERCHES MANUELLES SUGGEREES :\n"
+                f"• Catawiki.com → rechercher le nom exact\n"
+                f"• 1stDibs.com → pour objets de design/art\n"
+                f"• Selency.fr → pour objets vintage français\n"
+                f"• eBay.fr → cocher \"Objets vendus\" dans les filtres"
             )
 
     if prix_revente == 0:
