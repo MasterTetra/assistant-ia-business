@@ -22,10 +22,13 @@ Tu dois créer une annonce parfaitement optimisée pour vendre cet objet rapidem
 
 INFORMATIONS SUR L'OBJET :
 - Référence : {ref}
+- Description de l'objet : {description}
 - Prix d'achat : {prix_achat}€
 - Source : {source}
 - Nombre de photos : {nb_photos}
 - Notes : {notes}
+
+IMPORTANT : Génère l'annonce en te basant EXACTEMENT sur la description fournie. Ne change pas le type d'objet.
 
 Génère l'annonce complète dans ce format EXACT :
 
@@ -75,6 +78,7 @@ async def generate_listing(ref: str) -> str:
     source = f.get("Source", "Inconnu")
     nb_photos = f.get("Nombre de photos", 0)
     notes = f.get("Notes", "Aucune note supplémentaire")
+    description = f.get("Description", "")
     photos_urls = json.loads(f.get("Photos URLs", "[]")) if f.get("Photos URLs") else []
 
     prompt = LISTING_PROMPT.format(
@@ -82,7 +86,8 @@ async def generate_listing(ref: str) -> str:
         prix_achat=prix_achat,
         source=source,
         nb_photos=nb_photos,
-        notes=notes
+        notes=notes,
+        description=description
     )
 
     # 2. Si des photos sont disponibles, les inclure dans l'analyse
