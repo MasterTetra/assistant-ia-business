@@ -34,8 +34,8 @@ async def generate_report(periode: str = "semaine") -> str:
                     "maxRecords": 1000,
                     "fields[]": [
                         "Référence", "Statut", "Prix achat", "Prix vente",
-                        "Date achat", "Date vente", "Source", "Plateforme vente",
-                        "Frais plateforme", "Frais transport"
+                        "Date achat", "Date vente", "Source",
+                        "Frais plateforme", "Frais transport", "Plateforme vente", "Notes"
                     ]
                 }
             )
