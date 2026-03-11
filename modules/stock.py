@@ -113,12 +113,12 @@ async def create_product(photos: list, prix_achat: float, source: str, descripti
 
     fields = {
         "Référence": ref,
+        "Référence gestion": ref,
         "Date achat": now,
         "Prix achat": prix_achat,
         "Source": source,
         "Statut": "acheté",
         "Emplacement": location,
-        "Photos URLs": json.dumps(photos),  # stocke les URLs comme JSON
         "Nombre de photos": len(photos),
         "Description": description,
     }
