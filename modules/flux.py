@@ -148,27 +148,50 @@ async def analyser_marche(photo_url: str, caption: str) -> dict:
     except:
         pass
 
-    response = await _retry(
-        client.messages.create,
-        model=CLAUDE_MODEL,
-        max_tokens=1200,
-        tools=[{"type":"web_search_20250305","name":"web_search"}],
-        messages=[{"role":"user","content": image_content + [{
-            "type":"text",
-            "text": PROMPT_ANALYSE.format(
-                objet=objet, objet_court=objet_court,
-                caption=caption or "aucune",
-                dimensions=dims or "à estimer"
-            )
-        }]}]
+    import logging
+    logger = logging.getLogger(__name__)
+
+    prompt_text = PROMPT_ANALYSE.format(
+        objet=objet, objet_court=objet_court,
+        caption=caption or "aucune",
+        dimensions=dims or "à estimer"
     )
 
+    messages = [{"role": "user", "content": image_content + [{"type": "text", "text": prompt_text}]}]
+
+    # Boucle multi-tours pour laisser Claude utiliser les outils de recherche
     raw = ""
-    for block in response.content:
-        if hasattr(block,"text") and block.text:
-            raw = block.text
+    for _ in range(6):
+        response = await _retry(
+            client.messages.create,
+            model=CLAUDE_MODEL,
+            max_tokens=1500,
+            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            messages=messages
+        )
+
+        # Collecter le texte et vérifier si on doit continuer
+        has_tool_use = False
+        for block in response.content:
+            if hasattr(block, "text") and block.text:
+                raw = block.text
+            if block.type == "tool_use":
+                has_tool_use = True
+
+        if response.stop_reason == "end_turn" or not has_tool_use:
+            break
+
+        # Ajouter la réponse de Claude à la conversation et continuer
+        messages.append({"role": "assistant", "content": response.content})
+        messages.append({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": block.id, "content": ""}
+            for block in response.content if block.type == "tool_use"
+        ]})
+        await asyncio.sleep(2)
+
     raw = re.sub(r'\*\*(.+?)\*\*', r'\1', raw)
     raw = re.sub(r'\*(.+?)\*', r'\1', raw)
+    logger.info(f"RAW ANALYSE:\n{raw[:800]}")
 
     objet_id   = _get(raw, "OBJET") or objet
     prix_bas   = _num(raw, "PRIX_BAS")
