@@ -65,6 +65,11 @@ def get_session(user_id: int) -> dict:
             "vendre_caption": "",
             "vendre_prix_achat": 0,
             "vendre_source": "",
+            "last_photo_url": "",
+            "last_caption": "",
+            "lot_photos": [],
+            "lot_resultats": [],
+            "lot_index_courant": 0,
         }
     return user_sessions[user_id]
 
@@ -142,7 +147,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await thinking_msg.delete()
         await send_long_message(msg, result, parse_mode=None)
         keyboard = [[
-            InlineKeyboardButton("✅ J'achète", callback_data=f"acheter|{file_url}|{caption}"),
+            InlineKeyboardButton("✅ J'achète", callback_data="acheter_ok"),
             InlineKeyboardButton("❌ Je passe", callback_data="passer"),
         ]]
         await msg.reply_text("👆 Décision ?", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -157,10 +162,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = get_session(user_id)
     data = query.data
 
-    if data.startswith("acheter|"):
-        parts = data.split("|", 2)
-        photo_url = parts[1]
-        caption_saved = parts[2] if len(parts) > 2 else ""
+    if data == "acheter_ok":
+        photo_url = session.get("last_photo_url", "")
+        caption_saved = session.get("last_caption", "")
         session["mode"] = "attente_prix_source"
         session["photos_buffer"] = [photo_url]
         session["descriptions_buffer"] = [caption_saved] if caption_saved else []
@@ -230,6 +234,54 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session["mode"] = None
         session["vendre_data"] = None
         await query.edit_message_text("❌ Vente annulée.")
+
+    elif data.startswith("lot_ok|"):
+        index = int(data.split("|")[1])
+        session = get_session(query.from_user.id)
+        resultats = session.get("lot_resultats", [])
+        if index < len(resultats):
+            resultats[index]["valide"] = True
+            # Archiver dans Airtable
+            from modules.lot import archiver_airtable_lot, generer_ref_gestion
+            ref = await generer_ref_gestion()
+            ok = await archiver_airtable_lot(resultats[index], ref)
+            status = f"✅ Archivé — {ref}" if ok else "⚠️ Erreur Airtable"
+            await query.edit_message_text(
+                f"✅ VALIDE — Objet {index + 1}\n"
+                f"{resultats[index]['titre_ebay']}\n"
+                f"Prix eBay : {resultats[index]['prix_ebay']} euros\n"
+                f"{status}"
+            )
+        # Passer au suivant
+        next_index = index + 1
+        session["lot_index_courant"] = next_index
+        await asyncio.sleep(1)
+        await _envoyer_fiche_lot(query, session, next_index)
+
+    elif data.startswith("lot_non|"):
+        index = int(data.split("|")[1])
+        session = get_session(query.from_user.id)
+        resultats = session.get("lot_resultats", [])
+        if index < len(resultats):
+            resultats[index]["refuse"] = True
+            await query.edit_message_text(
+                f"❌ REFUSE — Objet {index + 1}\n"
+                f"{resultats[index]['objet']}"
+            )
+        next_index = index + 1
+        session["lot_index_courant"] = next_index
+        await asyncio.sleep(1)
+        await _envoyer_fiche_lot(query, session, next_index)
+
+    elif data.startswith("lot_prix|"):
+        index = int(data.split("|")[1])
+        session = get_session(query.from_user.id)
+        session["lot_modif_index"] = index
+        session["mode"] = "lot_modif_prix"
+        await query.edit_message_text(
+            f"✏️ Objet {index + 1} — Nouveau prix eBay ?\n\n"
+            f"Tapez le prix en euros (ex: 45)"
+        )
 
 async def cmd_acheter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = get_session(update.effective_user.id)
@@ -358,6 +410,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         thinking = await update.message.reply_text("📦 Chargement...")
         result = await get_stock_summary()
         await thinking.edit_text(result, parse_mode="Markdown")
+    elif session.get("mode") == "lot_modif_prix":
+        try:
+            nouveau_prix = int(re.findall(r'\d+', update.message.text)[0])
+            index = session.get("lot_modif_index", 0)
+            resultats = session.get("lot_resultats", [])
+            if index < len(resultats):
+                resultats[index]["prix_ebay"] = nouveau_prix
+                resultats[index]["prix_lbc"] = int(nouveau_prix * 0.85)
+                resultats[index]["prix_vinted"] = int(nouveau_prix * 0.80)
+            session["mode"] = "lot_validation"
+            await update.message.reply_text(f"✅ Prix mis à jour : {nouveau_prix} euros")
+            await asyncio.sleep(1)
+            await _envoyer_fiche_lot(update, session, index)
+        except:
+            await update.message.reply_text("⚠️ Format invalide. Tapez juste un nombre, ex: 45")
+
     elif session.get("mode") == "vendre_modification":
         # Appliquer les modifications demandées par l'utilisateur
         vdata = session.get("vendre_data", {})
@@ -468,34 +536,27 @@ async def cmd_analyser(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photos = session["vendre_photos"]
         caption = session["vendre_caption"]
 
-        # Étape 1 : identification rapide
-        await thinking.edit_text("🔍 Identification de l'objet...")
-        objet_id = caption or "objet inconnu"
-        if photos:
-            try:
-                import anthropic as anth
-                import httpx, base64
-                from config.settings import ANTHROPIC_API_KEY, CLAUDE_MODEL
-                cl = anth.Anthropic(api_key=ANTHROPIC_API_KEY)
-                async with httpx.AsyncClient(timeout=30) as http:
-                    r = await http.get(photos[0])
-                    img = base64.standard_b64encode(r.content).decode()
-                    mt = "image/jpeg"
-                r1 = cl.messages.create(
-                    model=CLAUDE_MODEL,
-                    max_tokens=80,
-                    messages=[{"role": "user", "content": [
-                        {"type": "image", "source": {"type": "base64", "media_type": mt, "data": img}},
-                        {"type": "text", "text": f"Infos : {caption}\nIdentifie cet objet en 1 ligne précise : [Marque/Artiste] [type] [matière] [couleur/style]"}
-                    ]}]
-                )
-                objet_id = r1.content[0].text.strip().split("\n")[0]
-            except:
-                pass
+        # Lancer l'analyse + mettre à jour le message toutes les 10s
+        objet_id = caption or "objet a identifier sur photo"
 
-        # Étape 2 : analyse complète + génération annonce
-        await thinking.edit_text("📊 Recherche des prix marché sur eBay...")
-        data = await analyser_et_generer(photos, caption, objet_id)
+        import asyncio as _aio
+
+        async def _progress():
+            steps = [
+                "🔍 Identification de l'objet...",
+                "🌐 Recherche des prix sur eBay...",
+                "📝 Génération de l'annonce...",
+                "⏳ Finalisation...",
+            ]
+            for step in steps:
+                await thinking.edit_text(step)
+                await _aio.sleep(12)
+
+        progress_task = _aio.create_task(_progress())
+        try:
+            data = await analyser_et_generer(photos, caption, objet_id)
+        finally:
+            progress_task.cancel()
 
         # Étape 3 : générer référence de gestion
         ref = await generer_ref_gestion()
@@ -528,6 +589,149 @@ async def cmd_analyser(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await thinking.edit_text(f"⚠️ Erreur analyse : {str(e)[:200]}")
 
+
+
+async def cmd_lot_debut(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /lot_debut — Active la collecte de photos en lot
+    """
+    session = get_session(update.effective_user.id)
+    session["mode"] = "lot_collecte"
+    session["lot_photos"] = []
+    session["lot_resultats"] = []
+    session["lot_index_courant"] = 0
+    await update.message.reply_text(
+        "📦 MODE LOT ACTIVE\n\n"
+        "Envoie jusqu'à 50 photos, une par une.\n"
+        "Ajoute une légende à chaque photo avec les infos de l'objet.\n\n"
+        "Exemple de légende :\n"
+        "César Baldaccini lampe cristal Daum - très bon état\n\n"
+        "Quand toutes les photos sont envoyées → /lot_analyser\n"
+        "Pour annuler → /lot_annuler"
+    )
+
+
+async def cmd_lot_analyser(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /lot_analyser — Lance l'analyse de tous les objets du lot
+    """
+    session = get_session(update.effective_user.id)
+
+    if session.get("mode") != "lot_collecte":
+        await update.message.reply_text("⚠️ Utilise /lot_debut d'abord.")
+        return
+
+    photos = session.get("lot_photos", [])
+    if not photos:
+        await update.message.reply_text("⚠️ Aucune photo reçue. Envoie des photos d'abord.")
+        return
+
+    nb = len(photos)
+    cout_estime = round(nb * 0.01, 2)
+
+    thinking = await update.message.reply_text(
+        f"🔍 Analyse de {nb} objet(s) en cours...\n"
+        f"Coût estimé : ~{cout_estime}$\n\n"
+        f"⏳ Environ {nb * 15} secondes...\n"
+        f"Je vous enverrai les fiches une par une."
+    )
+
+    from modules.lot import analyser_objet, MAX_LOT
+    resultats = []
+
+    for i, item in enumerate(photos[:MAX_LOT], 1):
+        try:
+            await thinking.edit_text(
+                f"🔍 Analyse {i}/{nb}...\n"
+                f"⏳ Environ {(nb - i) * 15} secondes restantes..."
+            )
+            data = await analyser_objet(item["url"], item["caption"], i)
+            data["total"] = nb
+            resultats.append(data)
+            # Pause entre chaque appel pour éviter le rate limit
+            if i < nb:
+                await asyncio.sleep(3)
+        except Exception as e:
+            resultats.append({
+                "index": i, "total": nb,
+                "objet": item["caption"] or f"Objet {i}",
+                "photo_url": item["url"],
+                "caption": item["caption"],
+                "erreur": str(e)[:100],
+                "titre_ebay": item["caption"] or f"Objet {i}",
+                "prix_ebay": 0, "prix_lbc": 0, "prix_vinted": 0,
+                "prix_bas": 0, "prix_moyen": 0, "prix_haut": 0,
+                "achat_max": 0, "label_regle": "",
+                "etat": "", "categorie": "", "matiere": "",
+                "mots_cles": "", "description": "", "conseil": "",
+                "titre_lbc": "", "titre_vinted": "",
+            })
+
+    session["lot_resultats"] = resultats
+    session["lot_index_courant"] = 0
+    session["mode"] = "lot_validation"
+
+    await thinking.delete()
+    await update.message.reply_text(
+        f"✅ Analyse terminée — {nb} objet(s)\n\n"
+        f"Je vais vous présenter chaque fiche.\n"
+        f"Validez ou refusez un par un.\n\n"
+        f"C'est parti !"
+    )
+    await asyncio.sleep(1)
+
+    # Envoyer la première fiche
+    await _envoyer_fiche_lot(update, session, 0)
+
+
+async def _envoyer_fiche_lot(update_or_query, session: dict, index: int):
+    """Envoie une fiche lot avec boutons valider/modifier/refuser."""
+    from modules.lot import formater_fiche_lot
+    resultats = session.get("lot_resultats", [])
+
+    if index >= len(resultats):
+        # Tout traité
+        valides = sum(1 for r in resultats if r.get("valide"))
+        refus = sum(1 for r in resultats if r.get("refuse"))
+        msg = (
+            f"🎉 LOT TERMINE\n\n"
+            f"✅ Validés et archivés : {valides}\n"
+            f"❌ Refusés : {refus}\n"
+            f"📦 Total traité : {len(resultats)}\n\n"
+            f"Tous les objets validés sont en ligne dans Airtable."
+        )
+        if hasattr(update_or_query, 'message'):
+            await update_or_query.message.reply_text(msg)
+        else:
+            await update_or_query.message.reply_text(msg)
+        session["mode"] = None
+        return
+
+    data = resultats[index]
+    fiche = formater_fiche_lot(data)
+
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Valider", callback_data=f"lot_ok|{index}"),
+            InlineKeyboardButton("❌ Refuser", callback_data=f"lot_non|{index}"),
+        ],
+        [InlineKeyboardButton("✏️ Modifier prix", callback_data=f"lot_prix|{index}")]
+    ])
+
+    if hasattr(update_or_query, 'message'):
+        await update_or_query.message.reply_text(fiche, reply_markup=keyboard)
+    else:
+        await update_or_query.message.reply_text(fiche, reply_markup=keyboard)
+
+
+async def cmd_lot_annuler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    session = get_session(update.effective_user.id)
+    nb = len(session.get("lot_photos", []))
+    session["mode"] = None
+    session["lot_photos"] = []
+    session["lot_resultats"] = []
+    await update.message.reply_text(f"❌ Lot annulé. {nb} photo(s) supprimées.")
 
 async def cmd_statut(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -578,6 +782,9 @@ def main():
     app.add_handler(CommandHandler("finances", cmd_finances))
     app.add_handler(CommandHandler("statut", cmd_statut))
     app.add_handler(CommandHandler("vendre", cmd_vendre))
+    app.add_handler(CommandHandler("lot_debut", cmd_lot_debut))
+    app.add_handler(CommandHandler("lot_analyser", cmd_lot_analyser))
+    app.add_handler(CommandHandler("lot_annuler", cmd_lot_annuler))
     app.add_handler(CommandHandler("analyser", cmd_analyser))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
