@@ -205,22 +205,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await thinking_msg.delete()
         await send_long_message(msg, formater_analyse(data), parse_mode=None)
 
-        if data["marge_ok"]:
-            keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ Continuer — générer annonce", callback_data="flux_continuer"),
-                InlineKeyboardButton("❌ Annuler", callback_data="flux_annuler"),
-            ]])
-            await msg.reply_text("✅ Marge suffisante. On génère l'annonce ?", reply_markup=keyboard)
-        else:
-            keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton("⚠️ Continuer quand même", callback_data="flux_continuer"),
-                InlineKeyboardButton("❌ Abandonner", callback_data="flux_annuler"),
-            ]])
-            await msg.reply_text(
-                f"⚠️ Marge insuffisante ({data['marge_pct']}% — objectif {data['label']})\n"
-                "Vous pouvez quand même continuer.",
-                reply_markup=keyboard
-            )
+        # Demander le prix d'achat avant de calculer la marge
+        session["mode"] = "flux_attente_prix_achat"
+        await msg.reply_text(
+            f"💶 Combien avez-vous payé cet objet ?\n\n"
+            f"Tapez le prix en euros (ex: 45) ou 0 si pas encore acheté.\n"
+            f"Prix d'achat maximum conseillé : {data['achat_max']} euros"
+        )
     except Exception as e:
         logger.error(f"Erreur flux: {e}")
         await thinking_msg.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
@@ -600,6 +591,33 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         thinking = await update.message.reply_text("📦 Chargement...")
         result = await get_stock_summary()
         await thinking.edit_text(result, parse_mode="Markdown")
+    elif session.get("mode") == "flux_attente_prix_achat":
+        try:
+            prix_achat = float(re.findall(r'[\d.,]+', update.message.text)[0].replace(',', '.'))
+            session["flux_prix_achat"] = prix_achat
+            session["mode"] = "flux_validation_achat"
+            data_flux = session.get("flux_data", {})
+
+            from modules.flux import formater_rentabilite
+            rentabilite = formater_rentabilite(data_flux, prix_achat)
+            achat_max = data_flux.get("achat_max", 0)
+            marge_ok = prix_achat <= achat_max or prix_achat == 0
+
+            if marge_ok or prix_achat == 0:
+                keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ Générer l'annonce", callback_data="flux_continuer"),
+                    InlineKeyboardButton("❌ Annuler", callback_data="flux_annuler"),
+                ]])
+                await update.message.reply_text(rentabilite + "\n✅ Dans les marges — on génère l'annonce ?", reply_markup=keyboard)
+            else:
+                keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("⚠️ Continuer quand même", callback_data="flux_continuer"),
+                    InlineKeyboardButton("❌ Abandonner", callback_data="flux_annuler"),
+                ]])
+                await update.message.reply_text(rentabilite + "\n⚠️ Au-dessus du seuil — continuer quand même ?", reply_markup=keyboard)
+        except (IndexError, ValueError):
+            await update.message.reply_text("⚠️ Tapez juste un nombre, ex: 45")
+
     elif session.get("mode") == "flux_attente_prix":
         try:
             nouveau_prix = int(re.findall(r'\d+', update.message.text)[0])
