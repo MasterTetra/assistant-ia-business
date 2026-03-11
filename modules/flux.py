@@ -320,7 +320,7 @@ def formater_rentabilite(data: dict, prix_achat: float) -> str:
     if ok:
         status = f"✅ BON ACHAT — sous le seuil de {achat_max} euros"
     else:
-        depassement = round((prix_achat - achat_max) / achat_max * 100)
+        depassement = round((prix_achat - achat_max) / achat_max * 100) if achat_max > 0 else 0
         status = f"⚠️ AU-DESSUS du seuil ({depassement}% de plus que les {achat_max} euros conseillés)"
 
     return (
