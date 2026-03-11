@@ -19,6 +19,29 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+async def send_long_message(msg, text: str, parse_mode: str = "Markdown"):
+    """Envoie un message long en le découpant si nécessaire (limite Telegram = 4096 chars)."""
+    max_len = 4000
+    if len(text) <= max_len:
+        await msg.reply_text(text, parse_mode=parse_mode)
+        return
+    # Découper proprement aux sauts de ligne
+    parts = []
+    current = ""
+    for line in text.split("\n"):
+        if len(current) + len(line) + 1 > max_len:
+            if current:
+                parts.append(current)
+            current = line
+        else:
+            current += ("\n" + line) if current else line
+    if current:
+        parts.append(current)
+    for i, part in enumerate(parts):
+        suffix = f"\n_(suite {i+1}/{len(parts)})_" if len(parts) > 1 else ""
+        await msg.reply_text(part + suffix, parse_mode=parse_mode)
+
+
 from modules.sourcing import analyze_sourcing
 from modules.stock import create_product, get_stock_summary, find_product
 from modules.listings import generate_listing, publish_listing
@@ -111,7 +134,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         result = await analyze_sourcing(file_url, caption)
         await thinking_msg.delete()
-        await msg.reply_text(result, parse_mode="Markdown")
+        await send_long_message(msg, result)
         keyboard = [[
             InlineKeyboardButton("✅ J'achète", callback_data=f"acheter|{file_url}|{caption}"),
             InlineKeyboardButton("❌ Je passe", callback_data="passer"),
