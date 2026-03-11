@@ -35,9 +35,13 @@ PROMPT_ANALYSE = """Tu es un expert en achat-revente d'objets d'occasion avec 20
 Objet : {objet}
 Informations techniques connues : {caption}
 
-ETAPE 1 - Fais 2 recherches web :
-- Recherche 1 : "{objet_court} prix vente" sur ebay.fr et leboncoin.fr
-- Recherche 2 : "{objet_court} vendu adjuge" sur catawiki.com et interencheres.com
+ETAPE 1 - Fais 2 recherches dans cet ordre OBLIGATOIRE :
+- Recherche 1 : "{requete_1} prix" — cherche des annonces actives et ventes terminees
+- Recherche 2 : "{requete_2} vendu" — cherche specifiquement des ventes realisees
+
+Si peu de resultats, essaie aussi : "{requete_3} prix vente"
+
+IMPORTANT : Cherche sur ebay.fr, leboncoin.fr, catawiki.com, selency.fr, pamono.com, 1stdibs.com
 
 ETAPE 2 - Reponds avec ce format exact, sans markdown :
 
@@ -47,7 +51,7 @@ ANNONCES:
 BAS: [chiffre]
 MOYEN: [chiffre]
 HAUT: [chiffre]
-REVENTE: [chiffre conseille]
+REVENTE: [chiffre conseille base sur les ventes reelles]
 DEMANDE: [FORTE ou MOYENNE ou FAIBLE]
 VITESSE: [RAPIDE ou NORMALE ou LENTE]
 RAISON: [phrase sur tendance marche actuelle]
@@ -55,8 +59,8 @@ POIDS: [{poids}]
 DIMENSIONS: [{dimensions}]
 ENCOMBREMENT: [PETIT ou MOYEN ou GRAND]
 FACILITE_ENVOI: [FACILE ou MOYEN ou DIFFICILE]
-PLATEFORMES: [liste ordonnee]
-CONSEIL: [conseil pratique base sur les donnees]"""
+PLATEFORMES: [liste ordonnee par pertinence pour cet objet]
+CONSEIL: [conseil pratique base sur les donnees trouvees]"""
 
 
 def _extraire_dimensions(caption: str):
@@ -134,6 +138,13 @@ async def analyze_sourcing(photo_url: str, caption: str = "") -> str:
 
         await asyncio.sleep(2)
 
+        # Construire 3 requêtes de recherche progressives
+        # Du plus spécifique au plus général
+        mots = objet_court.split()
+        requete_1 = " ".join(mots[:4]) if len(mots) >= 4 else objet_court  # ex: "César Baldaccini lampe cristal"
+        requete_2 = " ".join(mots[:3]) if len(mots) >= 3 else objet_court  # ex: "César Baldaccini lampe"
+        requete_3 = " ".join(mots[:2]) if len(mots) >= 2 else mots[0]      # ex: "César Baldaccini"
+
         # Appel 2 : recherche web + analyse
         r2 = client.messages.create(
             model=CLAUDE_MODEL,
@@ -144,6 +155,9 @@ async def analyze_sourcing(photo_url: str, caption: str = "") -> str:
                 "content": PROMPT_ANALYSE.format(
                     objet=objet,
                     objet_court=objet_court,
+                    requete_1=requete_1,
+                    requete_2=requete_2,
+                    requete_3=requete_3,
                     caption=caption or "aucune",
                     poids=poids_connu if poids_connu != "A estimer" else "A estimer selon photo",
                     dimensions=dims_connues if dims_connues else "A estimer selon photo"
