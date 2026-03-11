@@ -9,9 +9,24 @@ import httpx
 import base64
 import re
 import asyncio
+import time
 from config.settings import ANTHROPIC_API_KEY, CLAUDE_MODEL
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+async def _claude_call_with_retry(func, *args, **kwargs):
+    """Retry automatique si rate limit 429."""
+    for attempt in range(4):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            if "429" in str(e) and attempt < 3:
+                wait = 15 * (attempt + 1)
+                await asyncio.sleep(wait)
+            else:
+                raise
+
+
 
 PALIERS = [
     (0,    10,   3.0, 200, "x3 minimum"),
@@ -126,17 +141,25 @@ async def analyze_sourcing(photo_url: str, caption: str = "") -> str:
         media_type = "image/png" if "png" in resp.headers.get("content-type", "") else "image/jpeg"
 
         # Appel 1 : identification précise avec toutes les infos dispo
-        r1 = client.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=120,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": image_data}},
-                    {"type": "text", "text": PROMPT_ID.format(caption=caption or "aucune information")}
-                ]
-            }]
-        )
+        for _attempt in range(3):
+            try:
+                r1 = await _claude_call_with_retry(client.messages.create,
+                        model=CLAUDE_MODEL,
+                        max_tokens=120,
+                        messages=[{
+                            "role": "user",
+                            "content": [
+                                {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": image_data}},
+                                {"type": "text", "text": PROMPT_ID.format(caption=caption or "aucune information")}
+                            ]
+                        }]
+                    )
+                break
+            except Exception as _e:
+                if "429" in str(_e) and _attempt < 2:
+                    await asyncio.sleep(10 * (_attempt + 1))
+                else:
+                    raise
         objet = r1.content[0].text.strip().split("\n")[0]
         objet = re.sub(r'[«»""\*#_]', '', objet).strip()
 
@@ -144,7 +167,7 @@ async def analyze_sourcing(photo_url: str, caption: str = "") -> str:
         objet_court = re.sub(r'\d+\s*(?:cm|mm|x|\*)', '', objet).strip()
         objet_court = re.sub(r'\s+', ' ', objet_court).strip()
 
-        await asyncio.sleep(2)
+        await asyncio.sleep(5)
 
         # Construire 3 requêtes de recherche progressives
         # Du plus spécifique au plus général
@@ -154,7 +177,7 @@ async def analyze_sourcing(photo_url: str, caption: str = "") -> str:
         requete_3 = " ".join(mots[:2]) if len(mots) >= 2 else mots[0]      # ex: "César Baldaccini"
 
         # Appel 2 : recherche web + analyse
-        r2 = client.messages.create(
+        r2 = await _claude_call_with_retry(client.messages.create,
             model=CLAUDE_MODEL,
             max_tokens=1000,
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
