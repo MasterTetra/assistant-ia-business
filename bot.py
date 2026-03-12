@@ -1245,6 +1245,13 @@ def main():
         # Démarrer webhook server
         webhook_runner = await start_webhook_server(chat_id=2134299043, port=port)
 
+        # S'abonner aux notifications eBay au démarrage
+        try:
+            from modules.ebay_setup import setup_notifications
+            await setup_notifications()
+        except Exception as e:
+            logger.warning(f"eBay setup skipped: {e}")
+
         # Démarrer le bot dans la même boucle
         async with application:
             await application.initialize()
