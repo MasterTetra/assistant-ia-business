@@ -65,8 +65,7 @@ TITRE: [max 60 caracteres, mots-cles importants en premier, pas de majuscules in
 DESCRIPTION:
 [200-300 mots, points forts, etat, caracteristiques, usage ideal]
 FIN_DESCRIPTION
-MOTS_CLES: [15 mots-cles separes par virgules]
-CONSEIL: [1 conseil pratique pour la vente]"""
+MOTS_CLES: [15 mots-cles separes par virgules]"""
 
 
 async def _retry(func, *args, **kwargs):
@@ -321,8 +320,7 @@ def formater_rentabilite(data: dict, prix_achat: float) -> str:
 def formater_annonce(data: dict) -> str:
     titre = data.get("titre") or data.get("titre_ebay") or data.get("objet", "")
     prix = data.get("prix_revente", 0)
-    conseil = data.get("conseil", "")
-    conseil_line = f"\nCONSEIL : {conseil}" if conseil else ""
+    conseil_line = ""  # CONSEIL supprimé
     return (
         f"ANNONCE GENEREE\n"
         f"{'='*35}\n\n"
