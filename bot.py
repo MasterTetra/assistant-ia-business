@@ -1236,19 +1236,37 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_callback))
 
     logger.info("🤖 Bot démarré avec succès !")
-    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
-if __name__ == "__main__":
-    import asyncio as _asyncio
-
-    async def _main():
+    async def _run_all(application):
+        import asyncio as _asyncio
         from modules.webhook_server import start_webhook_server
         port = int(os.getenv("PORT", "8080"))
-        webhook_runner = await start_webhook_server(
-            chat_id=2134299043,
-            port=port
-        )
-        main()
-        await webhook_runner.cleanup()
 
-    _asyncio.run(_main())
+        # Démarrer webhook server
+        webhook_runner = await start_webhook_server(chat_id=2134299043, port=port)
+
+        # Démarrer le bot dans la même boucle
+        async with application:
+            await application.initialize()
+            await application.start()
+            await application.updater.start_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True
+            )
+            logger.info("✅ Bot + Webhook en ligne")
+            # Attendre indéfiniment
+            stop_event = _asyncio.Event()
+            try:
+                await stop_event.wait()
+            except (KeyboardInterrupt, SystemExit):
+                pass
+            finally:
+                await application.updater.stop()
+                await application.stop()
+                await webhook_runner.cleanup()
+
+    import asyncio as _asyncio
+    _asyncio.run(_run_all(app))
+
+if __name__ == "__main__":
+    main()
