@@ -378,16 +378,15 @@ async def archiver(data: dict, ref: str, prix_achat_total: float, source: str,
             "Référence": ref,
             "Référence gestion": ref,
             "Description": data.get("caption") or data.get("objet", ""),
-            "Prix achat": prix_unitaire,
-            "Prix achat total": prix_achat_total,
-            "Prix achat unitaire": prix_unitaire,
-            "Prix vente": data["prix_revente"],
+            "Prix achat total": round(float(prix_achat_total), 2),
+            "Prix achat unitaire": round(float(prix_unitaire), 4),
+            "Prix vente": round(float(data["prix_revente"]), 2),
             "Source": source or "Non renseigne",
             "Statut": "en ligne",
             "Annonce générée": annonce,
             "Date achat": datetime.now().strftime("%Y-%m-%d"),
             "Notes": data.get("conseil", ""),
-            "Quantite totale": quantite,
+            "Quantite totale": int(quantite),
             "Quantite vendue": 0,
         }
         async with httpx.AsyncClient(timeout=20) as http:
@@ -396,7 +395,10 @@ async def archiver(data: dict, ref: str, prix_achat_total: float, source: str,
                 headers=HEADERS_AT,
                 json={"fields": fields}
             )
-        return resp.status_code in (200, 201)
+        if resp.status_code not in (200, 201):
+            logger.error(f"Airtable error {resp.status_code}: {resp.text[:500]}")
+            return False
+        return True
     except Exception as e:
-        logger.error(f"archiver error: {e}")
+        logger.error(f"archiver error: {e}", exc_info=True)
         return False
