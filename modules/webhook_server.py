@@ -222,9 +222,22 @@ async def handle_makecom_notification(payload: dict) -> str:
 
     source = payload.get("source", "inconnu").lower()
     event = payload.get("event", "").lower()
-    titre = payload.get("titre", "")
+    titre_brut = payload.get("titre", "")
     prix = float(payload.get("prix", 0))
     ref = payload.get("ref", None)
+
+    # Nettoyer le titre : retirer les préfixes eBay courants
+    import re as _re
+    prefixes = [
+        r"vous avez vendu\s*:\s*",
+        r"you sold\s*:\s*",
+        r"article vendu\s*:\s*",
+        r"commande confirmée\s*:\s*",
+        r"sold\s*:\s*",
+    ]
+    titre = titre_brut
+    for p in prefixes:
+        titre = _re.sub(p, "", titre, flags=_re.IGNORECASE).strip()
 
     statut_map = {
         "vendu": "vendu",
@@ -263,7 +276,7 @@ async def handle_makecom_notification(payload: dict) -> str:
         plateforme_label = "LBC" if "lbc" in source else "Vinted"
         msg = (
             f"🛒 VENTE {plateforme_label.upper()} DÉTECTÉE\n"
-            f"Article : {titre[:50]}\n"
+            f"Article : {titre_brut[:50]}\n"
             f"Référence : {ref_trouvee}\n"
             f"Prix vente : {prix}€\n"
             f"Frais {plateforme_label} : -{marge['frais_plateforme']}€\n"
