@@ -728,33 +728,54 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif session.get("mode") == "flux_attente_ajout":
         ajout = update.message.text.strip()
+        ajout_lower = ajout.lower()
         data_flux = session.get("flux_data", {})
-        from anthropic import AsyncAnthropic
-        from modules.flux import CLAUDE_MODEL
-        _client = AsyncAnthropic()
-        desc_actuelle = data_flux.get("description", "")
-        titre_actuel = data_flux.get("titre") or data_flux.get("titre_ebay", "")
-        prompt = (
-            f"Voici une annonce de vente en ligne :\n\n"
-            f"TITRE: {titre_actuel}\n\n"
-            f"DESCRIPTION:\n{desc_actuelle}\n\n"
-            f"Instruction de l\'utilisateur :\n{ajout}\n\n"
-            f"Réécris UNIQUEMENT la DESCRIPTION en appliquant cette instruction. "
-            f"Tu peux ajouter, retirer ou modifier uniquement ce qui est demandé. "
-            f"Conserve tout le reste du texte intact. "
-            f"Réponds UNIQUEMENT avec la description réécrite, sans titre ni balises."
-        )
-        think = await update.message.reply_text("✏️ Mise à jour en cours...")
-        try:
-            r = await _client.messages.create(
-                model=CLAUDE_MODEL, max_tokens=800,
-                messages=[{"role": "user", "content": prompt}]
+
+        # Retrait direct du CONSEIL ou MOTS-CLES sans appel Claude
+        if any(w in ajout_lower for w in ["conseil", "retirer: conseil", "supprimer conseil", "enlever conseil"]):
+            data_flux["conseil"] = ""
+        elif any(w in ajout_lower for w in ["mots-cles", "mots clés", "keywords"]) and any(w in ajout_lower for w in ["retirer", "supprimer", "enlever"]):
+            data_flux["mots_cles"] = ""
+        else:
+            # Appel Claude pour intégrer l'ajout dans la description
+            from anthropic import AsyncAnthropic
+            from modules.flux import CLAUDE_MODEL
+            _client = AsyncAnthropic()
+            desc_actuelle = data_flux.get("description", "")
+            conseil_actuel = data_flux.get("conseil", "")
+            titre_actuel = data_flux.get("titre") or data_flux.get("titre_ebay", "")
+            annonce_complete = f"DESCRIPTION:\n{desc_actuelle}"
+            if conseil_actuel:
+                annonce_complete += f"\n\nCONSEIL : {conseil_actuel}"
+            prompt = (
+                f"Voici une annonce de vente en ligne :\n\n"
+                f"TITRE: {titre_actuel}\n\n"
+                f"{annonce_complete}\n\n"
+                f"Instruction : {ajout}\n\n"
+                f"Applique cette instruction. Si l\'instruction concerne le CONSEIL, modifie le CONSEIL. "
+                f"Si elle concerne la DESCRIPTION, modifie la DESCRIPTION. "
+                f"Conserve tout le reste intact.\n"
+                f"Réponds avec ce format exact :\n"
+                f"DESCRIPTION:\n[texte description]\nFIN_DESC\n"
+                f"CONSEIL:\n[texte conseil ou vide si supprimé]\nFIN_CONSEIL"
             )
-            nouvelle_desc = r.content[0].text.strip() if r.content else desc_actuelle
-            data_flux["description"] = nouvelle_desc
-        except Exception:
-            pass
-        await think.delete()
+            think = await update.message.reply_text("✏️ Mise à jour en cours...")
+            try:
+                r = await _client.messages.create(
+                    model=CLAUDE_MODEL, max_tokens=800,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                raw = r.content[0].text.strip() if r.content else ""
+                import re as _re
+                desc_m = _re.search(r"DESCRIPTION:\n(.*?)\nFIN_DESC", raw, _re.DOTALL)
+                conseil_m = _re.search(r"CONSEIL:\n(.*?)\nFIN_CONSEIL", raw, _re.DOTALL)
+                if desc_m:
+                    data_flux["description"] = desc_m.group(1).strip()
+                if conseil_m:
+                    data_flux["conseil"] = conseil_m.group(1).strip()
+            except Exception:
+                pass
+            await think.delete()
         session["flux_data"] = data_flux
         session["mode"] = "flux_validation"
         from modules.flux import formater_annonce
@@ -771,32 +792,49 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif session.get("mode") == "flux_attente_modif":
         modif = update.message.text.strip()
+        modif_lower = modif.lower()
         data_flux = session.get("flux_data", {})
-        from anthropic import AsyncAnthropic
-        from modules.flux import CLAUDE_MODEL
-        _client = AsyncAnthropic()
-        desc_actuelle = data_flux.get("description", "")
-        titre_actuel = data_flux.get("titre") or data_flux.get("titre_ebay", "")
-        prompt = (
-            f"Voici une annonce de vente en ligne :\n\n"
-            f"TITRE: {titre_actuel}\n\n"
-            f"DESCRIPTION:\n{desc_actuelle}\n\n"
-            f"Demande de modification :\n{modif}\n\n"
-            f"Reformule UNIQUEMENT la DESCRIPTION en appliquant exactement cette modification. "
-            f"Ne change rien d\'autre. Conserve la structure, le style et tous les éléments non concernés. "
-            f"Réponds UNIQUEMENT avec la description réécrite, sans titre ni balises."
-        )
-        think = await update.message.reply_text("📝 Reformulation en cours...")
-        try:
-            r = await _client.messages.create(
-                model=CLAUDE_MODEL, max_tokens=800,
-                messages=[{"role": "user", "content": prompt}]
+
+        # Retrait direct du CONSEIL sans appel Claude
+        if any(w in modif_lower for w in ["conseil", "enlever conseil", "supprimer conseil", "retirer conseil"]):
+            data_flux["conseil"] = ""
+        else:
+            from anthropic import AsyncAnthropic
+            from modules.flux import CLAUDE_MODEL
+            _client = AsyncAnthropic()
+            desc_actuelle = data_flux.get("description", "")
+            conseil_actuel = data_flux.get("conseil", "")
+            titre_actuel = data_flux.get("titre") or data_flux.get("titre_ebay", "")
+            annonce_complete = f"DESCRIPTION:\n{desc_actuelle}"
+            if conseil_actuel:
+                annonce_complete += f"\n\nCONSEIL : {conseil_actuel}"
+            prompt = (
+                f"Voici une annonce de vente en ligne :\n\n"
+                f"TITRE: {titre_actuel}\n\n"
+                f"{annonce_complete}\n\n"
+                f"Modification demandée : {modif}\n\n"
+                f"Applique UNIQUEMENT cette modification. Ne change rien d\'autre.\n"
+                f"Réponds avec ce format exact :\n"
+                f"DESCRIPTION:\n[texte]\nFIN_DESC\n"
+                f"CONSEIL:\n[texte ou vide]\nFIN_CONSEIL"
             )
-            nouvelle_desc = r.content[0].text.strip() if r.content else desc_actuelle
-            data_flux["description"] = nouvelle_desc
-        except Exception:
-            pass
-        await think.delete()
+            think = await update.message.reply_text("📝 Reformulation en cours...")
+            try:
+                r = await _client.messages.create(
+                    model=CLAUDE_MODEL, max_tokens=800,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                raw = r.content[0].text.strip() if r.content else ""
+                import re as _re
+                desc_m = _re.search(r"DESCRIPTION:\n(.*?)\nFIN_DESC", raw, _re.DOTALL)
+                conseil_m = _re.search(r"CONSEIL:\n(.*?)\nFIN_CONSEIL", raw, _re.DOTALL)
+                if desc_m:
+                    data_flux["description"] = desc_m.group(1).strip()
+                if conseil_m:
+                    data_flux["conseil"] = conseil_m.group(1).strip()
+            except Exception:
+                pass
+            await think.delete()
         session["flux_data"] = data_flux
         session["mode"] = "flux_validation"
         from modules.flux import formater_annonce
