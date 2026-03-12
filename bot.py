@@ -640,25 +640,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif session.get("mode") == "flux_attente_prix":
         try:
             nouveau_prix = int(re.findall(r'\d+', update.message.text)[0])
-            data_flux = session.get("flux_data", {})
-            data_flux["prix_revente"] = nouveau_prix
-            session["flux_data"] = data_flux
-            session["mode"] = "flux_validation"
-            from modules.flux import formater_annonce
-            annonce_txt = formater_annonce(data_flux)
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("✅ Valider", callback_data="flux_valider"),
-                    InlineKeyboardButton("✏️ Modifier prix", callback_data="flux_mod_prix"),
-                ],
-                [
-                    InlineKeyboardButton("✏️ Modifier annonce", callback_data="flux_mod_annonce"),
-                    InlineKeyboardButton("❌ Annuler", callback_data="flux_annuler"),
-                ]
-            ])
-            await update.message.reply_text(annonce_txt, reply_markup=keyboard)
-        except:
+        except (IndexError, ValueError):
             await update.message.reply_text("⚠️ Tapez juste un nombre, ex: 45")
+            return
+        data_flux = session.get("flux_data", {})
+        data_flux["prix_revente"] = nouveau_prix
+        session["flux_data"] = data_flux
+        session["mode"] = "flux_validation"
+        from modules.flux import formater_annonce
+        from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
+        annonce_txt = formater_annonce(data_flux)
+        keyboard = IKM([
+            [IKB("✅ Valider", callback_data="flux_valider"), IKB("✏️ Modifier prix", callback_data="flux_mod_prix")],
+            [IKB("✏️ Modifier annonce", callback_data="flux_mod_annonce"), IKB("❌ Annuler", callback_data="flux_annuler")]
+        ])
+        await update.message.reply_text(annonce_txt, reply_markup=keyboard)
 
     elif session.get("mode") == "flux_attente_modif":
         modif = update.message.text.strip()
@@ -673,16 +669,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session["flux_data"] = data_flux
         session["mode"] = "flux_validation"
         from modules.flux import formater_annonce
+        from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
         annonce_txt = formater_annonce(data_flux)
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("✅ Valider", callback_data="flux_valider"),
-                InlineKeyboardButton("✏️ Modifier prix", callback_data="flux_mod_prix"),
-            ],
-            [
-                InlineKeyboardButton("✏️ Modifier annonce", callback_data="flux_mod_annonce"),
-                InlineKeyboardButton("❌ Annuler", callback_data="flux_annuler"),
-            ]
+        keyboard = IKM([
+            [IKB("✅ Valider", callback_data="flux_valider"), IKB("✏️ Modifier prix", callback_data="flux_mod_prix")],
+            [IKB("✏️ Modifier annonce", callback_data="flux_mod_annonce"), IKB("❌ Annuler", callback_data="flux_annuler")]
         ])
         await update.message.reply_text(annonce_txt, reply_markup=keyboard)
 
