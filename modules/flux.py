@@ -52,24 +52,21 @@ ENCOMBREMENT: [PETIT ou MOYEN ou GRAND]
 ENVOI: [FACILE ou MOYEN ou DIFFICILE]
 RAISON: [phrase courte sur le marche]"""
 
-PROMPT_ANNONCE = """Tu es expert en vente eBay et Leboncoin.
+PROMPT_ANNONCE = """Tu es expert en vente en ligne (eBay, Leboncoin, Vinted).
 
 OBJET : {objet}
 DESCRIPTION : {description}
 ETAT : {etat}
 PRIX : {prix} euros
 
-Reponds UNIQUEMENT avec ce format, sans asterisques :
+Reponds UNIQUEMENT avec ce format exact, sans asterisques ni markdown :
 
-TITRE_EBAY: [max 80 caracteres, mots-cles en premier]
-TITRE_LBC: [max 70 caracteres]
-TITRE_VINTED: [max 60 caracteres]
+TITRE: [max 60 caracteres, mots-cles importants en premier, pas de majuscules inutiles]
 DESCRIPTION:
-[200-300 mots, points forts, etat, caracteristiques]
+[200-300 mots, points forts, etat, caracteristiques, usage ideal]
 FIN_DESCRIPTION
 MOTS_CLES: [15 mots-cles separes par virgules]
-CATEGORIE: [categorie principale]
-CONSEIL: [1 conseil pratique]"""
+CONSEIL: [1 conseil pratique pour la vente]"""
 
 
 async def _retry(func, *args, **kwargs):
@@ -256,9 +253,11 @@ async def generer_annonce(data: dict, etat: str = "") -> dict:
     raw = re.sub(r'\*(.+?)\*', r'\1', raw)
 
     desc_m = re.search(r'DESCRIPTION:\s*\n(.*?)FIN_DESCRIPTION', raw, re.DOTALL)
-    data["titre_ebay"]   = _get(raw, "TITRE_EBAY") or data["objet"]
-    data["titre_lbc"]    = _get(raw, "TITRE_LBC") or data["objet"]
-    data["titre_vinted"] = _get(raw, "TITRE_VINTED") or data["objet"]
+    titre = _get(raw, "TITRE") or _get(raw, "TITRE_EBAY") or data["objet"]
+    data["titre"] = titre
+    data["titre_ebay"]   = titre
+    data["titre_lbc"]    = titre
+    data["titre_vinted"] = titre
     data["description"]  = desc_m.group(1).strip() if desc_m else data["caption"]
     data["mots_cles"]    = _get(raw, "MOTS_CLES") or ""
     data["categorie"]    = _get(raw, "CATEGORIE") or ""
@@ -320,16 +319,13 @@ def formater_rentabilite(data: dict, prix_achat: float) -> str:
 
 
 def formater_annonce(data: dict) -> str:
+    titre = data.get("titre") or data.get("titre_ebay") or data.get("objet", "")
+    prix = data.get("prix_revente", 0)
     return (
         f"ANNONCE GENEREE\n"
         f"{'='*35}\n\n"
-        f"TITRE eBay :\n{data.get('titre_ebay', '')}\n\n"
-        f"TITRE LBC :\n{data.get('titre_lbc', '')}\n\n"
-        f"TITRE VINTED :\n{data.get('titre_vinted', '')}\n\n"
-        f"PRIX\n"
-        f"eBay    : {data['prix_revente']} euros\n"
-        f"LBC     : {int(data['prix_revente'] * 0.9)} euros\n"
-        f"Vinted  : {int(data['prix_revente'] * 0.85)} euros\n\n"
+        f"TITRE :\n{titre}\n\n"
+        f"PRIX : {prix} euros\n\n"
         f"DESCRIPTION\n{data.get('description', '')}\n\n"
         f"MOTS-CLES\n{data.get('mots_cles', '')}\n\n"
         f"CONSEIL : {data.get('conseil', '')}"
@@ -367,10 +363,9 @@ async def archiver(data: dict, ref: str, prix_achat_total: float, source: str,
                    quantite: int = 1) -> bool:
     try:
         prix_unitaire = round(prix_achat_total / quantite, 4) if quantite > 0 else prix_achat_total
+        titre = data.get("titre") or data.get("titre_ebay") or data.get("objet", "")
         annonce = (
-            f"TITRE EBAY: {data.get('titre_ebay', '')}\n"
-            f"TITRE LBC: {data.get('titre_lbc', '')}\n"
-            f"TITRE VINTED: {data.get('titre_vinted', '')}\n\n"
+            f"TITRE: {titre}\n\n"
             f"{data.get('description', '')}\n\n"
             f"MOTS-CLES: {data.get('mots_cles', '')}"
         )
