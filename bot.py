@@ -43,6 +43,25 @@ async def send_long_message(msg, text: str, parse_mode: str = "Markdown"):
         await msg.reply_text(part + suffix, parse_mode=parse_mode)
 
 
+async def smart_reply(update: Update, context, text: str, parse_mode: str = "Markdown", **kwargs):
+    """Répond intelligemment — gère les supergroupes avec topics (message_thread_id)."""
+    msg = update.effective_message
+    chat_id = update.effective_chat.id
+    thread_id = msg.message_thread_id if msg else None
+    try:
+        return await context.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode=parse_mode,
+            message_thread_id=thread_id,
+            **kwargs
+        )
+    except Exception as e:
+        logger.error(f"smart_reply error: {e}")
+        # Fallback sans thread_id
+        return await context.bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode)
+
+
 from modules.sourcing import analyze_sourcing
 from modules.stock import create_product, get_stock_summary, find_product
 from modules.listings import generate_listing, publish_listing
@@ -89,10 +108,13 @@ def is_authorized(user_id: int) -> bool:
 # ─── COMMANDES ───────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    chat_id = update.effective_chat.id
+    thread_id = update.effective_message.message_thread_id if update.effective_message else None
+    logger.info(f"🔑 /start — chat_id={chat_id}, thread_id={thread_id}, user_id={user.id}")
     if not is_authorized(user.id):
-        await update.message.reply_text("⛔ Accès non autorisé.")
+        await smart_reply(update, context, "⛔ Accès non autorisé.")
         return
-    await update.message.reply_text(
+    await smart_reply(update, context,
         f"👋 Bonjour {user.first_name} !\n\n"
         "🤖 *Assistant IA — Gestion Business*\n\n"
         "📌 *Commandes :*\n"
@@ -103,8 +125,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💰 /finances → Bilan financier\n"
         "🔍 /chercher [nom] → Trouver un produit\n"
         "📝 /annonce [ref] → Générer une annonce\n"
-        "❓ /aide → Toutes les commandes",
-        parse_mode="Markdown"
+        "❓ /aide → Toutes les commandes"
     )
 
 async def aide(update: Update, context: ContextTypes.DEFAULT_TYPE):
