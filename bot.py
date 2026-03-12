@@ -208,7 +208,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_long_message(msg, formater_analyse(data), parse_mode=None)
 
         # Demander le prix d'achat avant de calculer la marge
-        session["mode"] = "flux_attente_prix_achat"
+        session["mode"] = "flux_attente_achat_complet"
         await msg.reply_text(
             f"💶 Combien avez-vous payé cet objet ?\n\n"
             f"Tapez le prix en euros (ex: 45) ou 0 si pas encore acheté.\n"
@@ -591,7 +591,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── MODES ACTIFS EN PRIORITÉ ─────────────────────────
     logger.info(f"handle_text: mode={session.get('mode')!r} text={text!r}")
-    if session.get("mode") == "flux_attente_prix_achat":
+    if session.get("mode") == "flux_attente_achat_complet":
         raw_prix = update.message.text.strip().replace(" ", "").replace("€", "")
         try:
             if "," in raw_prix and "." not in raw_prix:
@@ -620,28 +620,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             IKB("❌ Abandonner", callback_data="flux_annuler"),
         ]])
 
-        # Demander quantité avant de continuer
-        session["mode"] = "flux_attente_quantite"
-        if marge_ok:
-            await update.message.reply_text(
-                rentabilite +
-                "\n✅ Dans les marges !\n\n"
-                "📦 Combien en avez-vous acheté ?\n"
-                "Format : `quantité` ou `prix_total;quantité`\n"
-                "Exemples :\n"
-                "• `1` → 1 exemplaire au prix saisi\n"
-                "• `6;60` → lot de 60 achetés 6€ au total (0,10€/unité)"
-            )
-        else:
-            await update.message.reply_text(
-                rentabilite +
-                "\n⚠️ Au-dessus du seuil\n\n"
-                "📦 Combien en avez-vous acheté ?\n"
-                "Format : `quantité` ou `prix_total;quantité`\n"
-                "Exemples :\n"
-                "• `1` → 1 exemplaire\n"
-                "• `6;60` → lot de 60 achetés 6€ au total"
-            )
+        # Question unique : prix total + quantité
+        session["mode"] = "flux_attente_achat_complet"
+        await update.message.reply_text(
+            "🛒 ACHAT\n\n"
+            "Répondez avec le prix total payé et la quantité :\n\n"
+            "• `6;60` → 6€ pour 60 unités (0,10€/unité)\n"
+            "• `400;1` → 400€ pour 1 exemplaire\n"
+            "• `0` → pas encore acheté\n\n"
+            f"Prix d\'achat maximum conseillé : {data_flux.get('achat_max', 0)} euros/unité"
+        )
         return
 
     elif session.get("mode") == "flux_attente_quantite":
