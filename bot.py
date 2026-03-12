@@ -639,7 +639,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await thinking.edit_text(result, parse_mode="Markdown")
     elif session.get("mode") == "flux_attente_prix":
         try:
-            nouveau_prix = int(re.findall(r'\d+', update.message.text)[0])
+            import re as _re
+            nouveau_prix = int(_re.findall(r'\d+', update.message.text)[0])
         except (IndexError, ValueError):
             await update.message.reply_text("⚠️ Tapez juste un nombre, ex: 45")
             return
@@ -684,7 +685,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif session.get("mode") == "lot_modif_prix":
         try:
-            nouveau_prix = int(re.findall(r'\d+', update.message.text)[0])
+            import re as _re
+            nouveau_prix = int(_re.findall(r'\d+', update.message.text)[0])
             index = session.get("lot_modif_index", 0)
             resultats = session.get("lot_resultats", [])
             if index < len(resultats):
