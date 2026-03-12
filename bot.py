@@ -1235,6 +1235,15 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(CallbackQueryHandler(handle_callback))
 
+    # DEBUG TEMPORAIRE — log tous les updates reçus
+    async def debug_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        logger.info(f"🐛 UPDATE reçu: chat_id={update.effective_chat.id if update.effective_chat else '?'} "
+                    f"thread_id={update.message.message_thread_id if update.message else '?'} "
+                    f"user_id={update.effective_user.id if update.effective_user else '?'} "
+                    f"text={update.message.text[:30] if update.message and update.message.text else '?'}")
+    from telegram.ext import TypeHandler
+    app.add_handler(TypeHandler(Update, debug_all), group=1)
+
     logger.info("🤖 Bot démarré avec succès !")
 
     async def _run_all(application):
