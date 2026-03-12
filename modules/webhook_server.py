@@ -319,12 +319,20 @@ async def handle_ebay_challenge(request: web.Request) -> web.Response:
     """
     eBay vérifie l'endpoint avec un challenge GET avant d'envoyer des notifications.
     Doit retourner {"challengeResponse": hash(challengeCode + verificationToken + endpoint)}
+    L'URL endpoint doit être exactement celle qu'eBay a appelée.
     """
     challenge_code = request.query.get("challenge_code", "")
     verification_token = os.getenv("EBAY_VERIFICATION_TOKEN", "cashbert-ebay-verify-2026")
-    endpoint = f"https://assistant-ia-business-production.up.railway.app/webhook"
-
+    
+    # Reconstruire l'URL exacte sans le query string
+    host = request.headers.get("X-Forwarded-Host") or request.host
+    scheme = request.headers.get("X-Forwarded-Proto", "https")
+    endpoint = f"{scheme}://{host}/webhook"
+    
+    logger.info(f"eBay challenge: code={challenge_code}, endpoint={endpoint}")
+    
     h = hashlib.sha256(f"{challenge_code}{verification_token}{endpoint}".encode()).hexdigest()
+    logger.info(f"eBay challenge response: {h}")
     return web.json_response({"challengeResponse": h})
 
 
