@@ -79,9 +79,9 @@ async def setup_notifications():
         if "Success" in resp.text:
             logger.info("✅ Notifications eBay activées (FixedPriceTransaction, ItemShipped)")
         elif "Failure" in resp.text:
-            logger.error(f"❌ eBay SetNotificationPreferences échoué: {resp.text[:300]}")
+            logger.error(f"❌ eBay SetNotificationPreferences échoué (réponse complète): {resp.text}")
         else:
-            logger.warning(f"eBay setup réponse inattendue: {resp.text[:200]}")
+            logger.warning(f"eBay setup réponse inattendue: {resp.text}")
 
     except Exception as e:
         logger.error(f"eBay setup error: {e}")
