@@ -1286,6 +1286,9 @@ def main():
         async with application:
             await application.initialize()
             await application.start()
+            # Attendre que Telegram expire l'ancienne session (évite 409 Conflict)
+            logger.info("⏳ Attente 8s avant polling (anti-409)...")
+            await asyncio.sleep(8)
             await application.updater.start_polling(
                 allowed_updates=Update.ALL_TYPES,
                 drop_pending_updates=True
