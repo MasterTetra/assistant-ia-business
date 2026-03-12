@@ -321,14 +321,16 @@ def formater_rentabilite(data: dict, prix_achat: float) -> str:
 def formater_annonce(data: dict) -> str:
     titre = data.get("titre") or data.get("titre_ebay") or data.get("objet", "")
     prix = data.get("prix_revente", 0)
+    conseil = data.get("conseil", "")
+    conseil_line = f"\nCONSEIL : {conseil}" if conseil else ""
     return (
         f"ANNONCE GENEREE\n"
         f"{'='*35}\n\n"
         f"TITRE :\n{titre}\n\n"
         f"PRIX : {prix} euros\n\n"
         f"DESCRIPTION\n{data.get('description', '')}\n\n"
-        f"MOTS-CLES\n{data.get('mots_cles', '')}\n\n"
-        f"CONSEIL : {data.get('conseil', '')}"
+        f"MOTS-CLES\n{data.get('mots_cles', '')}"
+        f"{conseil_line}"
     )
 
 
