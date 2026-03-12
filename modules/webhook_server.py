@@ -287,8 +287,11 @@ async def handle_webhook(request: web.Request) -> web.Response:
     """Point d'entrée unique pour tous les webhooks."""
     try:
         body = await request.read()
+        logger.info(f"📥 Webhook POST reçu — headers: {dict(request.headers)}")
+        logger.info(f"📥 Webhook body: {body[:500]}")
         payload = json.loads(body)
-    except Exception:
+    except Exception as e:
+        logger.error(f"Webhook parse error: {e}, body: {body[:200]}")
         return web.Response(text="bad request", status=400)
 
     # Identifier la source
@@ -312,6 +315,7 @@ async def handle_webhook(request: web.Request) -> web.Response:
 
 async def handle_health(request: web.Request) -> web.Response:
     """Health check endpoint."""
+    logger.info(f"Health check from {request.remote}")
     return web.Response(text="ok", status=200)
 
 
@@ -329,7 +333,7 @@ async def handle_ebay_challenge(request: web.Request) -> web.Response:
     scheme = request.headers.get("X-Forwarded-Proto", "https")
     endpoint = f"{scheme}://{host}/webhook"
     
-    logger.info(f"eBay challenge: code={challenge_code}, endpoint={endpoint}")
+    logger.info(f"📨 eBay challenge reçu: code={challenge_code}, endpoint={endpoint}")
     
     h = hashlib.sha256(f"{challenge_code}{verification_token}{endpoint}".encode()).hexdigest()
     logger.info(f"eBay challenge response: {h}")
