@@ -71,6 +71,8 @@ def get_session(user_id: int) -> dict:
             "flux_photo_url": "",
             "flux_caption": "",
             "flux_prix_achat": 0,
+            "flux_prix_total": 0,
+            "flux_quantite": 1,
             "flux_source": "",
             "lot_photos": [],
             "lot_resultats": [],
@@ -356,8 +358,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             from modules.flux import generer_ref, archiver
             ref = await generer_ref()
             prix_achat = session.get("flux_prix_achat", 0)
+            prix_total = session.get("flux_prix_total", prix_achat)
+            quantite = session.get("flux_quantite", 1)
             source = session.get("flux_source", "")
-            ok = await archiver(data_flux, ref, prix_achat, source)
+            ok = await archiver(data_flux, ref, prix_total, source, quantite)
             session["mode"] = None
             session["flux_data"] = None
             if ok:
@@ -616,15 +620,70 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             IKB("❌ Abandonner", callback_data="flux_annuler"),
         ]])
 
+        # Demander quantité avant de continuer
+        session["mode"] = "flux_attente_quantite"
         if marge_ok:
             await update.message.reply_text(
-                rentabilite + "\n✅ Dans les marges — on génère l'annonce ?",
-                reply_markup=kb_ok
+                rentabilite +
+                "\n✅ Dans les marges !\n\n"
+                "📦 Combien en avez-vous acheté ?\n"
+                "Format : `quantité` ou `prix_total;quantité`\n"
+                "Exemples :\n"
+                "• `1` → 1 exemplaire au prix saisi\n"
+                "• `6;60` → lot de 60 achetés 6€ au total (0,10€/unité)"
             )
         else:
             await update.message.reply_text(
-                rentabilite + "\n⚠️ Au-dessus du seuil — continuer quand même ?",
-                reply_markup=kb_warn
+                rentabilite +
+                "\n⚠️ Au-dessus du seuil\n\n"
+                "📦 Combien en avez-vous acheté ?\n"
+                "Format : `quantité` ou `prix_total;quantité`\n"
+                "Exemples :\n"
+                "• `1` → 1 exemplaire\n"
+                "• `6;60` → lot de 60 achetés 6€ au total"
+            )
+        return
+
+    elif session.get("mode") == "flux_attente_quantite":
+        raw = update.message.text.strip().replace(" ", "")
+        try:
+            if ";" in raw:
+                parts = raw.split(";")
+                prix_total = float(parts[0].replace(",", "."))
+                quantite = int(parts[1])
+                session["flux_prix_total"] = prix_total
+                session["flux_prix_achat"] = round(prix_total / quantite, 4)
+            else:
+                quantite = int(raw)
+                prix_total = session.get("flux_prix_achat", 0) * quantite
+                session["flux_prix_total"] = prix_total
+            session["flux_quantite"] = quantite
+            session["mode"] = "flux_validation_achat"
+            data_flux = session.get("flux_data") or {}
+            prix_unitaire = session["flux_prix_achat"]
+            prix_revente = data_flux.get("prix_revente", 0)
+            marge_u = prix_revente - prix_unitaire
+            marge_pct = round(marge_u / prix_unitaire * 100) if prix_unitaire > 0 else 0
+            from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
+            kb = IKM([[
+                IKB("✅ Générer l'annonce", callback_data="flux_continuer"),
+                IKB("❌ Annuler", callback_data="flux_annuler"),
+            ]])
+            await update.message.reply_text(
+                f"📦 RECAP ACHAT\n"
+                f"Quantité        : {quantite} unité(s)\n"
+                f"Prix total      : {session['flux_prix_total']} euros\n"
+                f"Prix unitaire   : {prix_unitaire} euros\n"
+                f"Prix revente    : {prix_revente} euros/unité\n"
+                f"Marge unitaire  : +{round(marge_u, 2)} euros (+{marge_pct}%)\n"
+                f"Marge totale    : +{round(marge_u * quantite, 2)} euros\n\n"
+                "On génère l'annonce ?",
+                reply_markup=kb
+            )
+        except (ValueError, IndexError, ZeroDivisionError):
+            await update.message.reply_text(
+                "⚠️ Format invalide.\n"
+                "Exemples :\n• `1` → 1 exemplaire\n• `6;60` → 6€ pour 60 unités"
             )
         return
 
@@ -639,9 +698,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await thinking.edit_text(result, parse_mode="Markdown")
     elif session.get("mode") == "flux_attente_prix":
         try:
-            import re as _re
-            nouveau_prix = int(_re.findall(r'\d+', update.message.text)[0])
-        except (IndexError, ValueError):
+            nouveau_prix = float(update.message.text.strip().replace(",", "."))
+        except ValueError:
             await update.message.reply_text("⚠️ Tapez juste un nombre, ex: 45")
             return
         data_flux = session.get("flux_data", {})
@@ -661,8 +719,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         modif = update.message.text.strip()
         data_flux = session.get("flux_data", {})
         if modif.lower().startswith("titre:"):
-            data_flux["titre_ebay"] = modif[6:].strip()
-            data_flux["titre_lbc"] = modif[6:].strip()[:70]
+            titre = modif[6:].strip()
+            data_flux["titre_ebay"] = titre[:80]
+            data_flux["titre_lbc"] = titre[:70]
+            data_flux["titre_vinted"] = titre[:60]
+        elif modif.lower().startswith("prix:"):
+            try:
+                nouveau_prix = float(modif[5:].strip().replace(",", "."))
+                data_flux["prix_revente"] = nouveau_prix
+            except ValueError:
+                pass
         elif modif.lower().startswith("description:"):
             data_flux["description"] = modif[12:].strip()
         elif modif.lower().startswith("etat:"):
