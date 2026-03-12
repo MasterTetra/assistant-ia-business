@@ -116,16 +116,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await smart_reply(update, context,
         f"👋 Bonjour {user.first_name} !\n\n"
-        "🤖 *Assistant IA — Gestion Business*\n\n"
-        "📌 *Commandes :*\n"
+        "🤖 Assistant IA — Gestion Business\n\n"
+        "📌 Commandes :\n"
         "📸 Photo → Analyse sourcing automatique\n"
         "🛒 /acheter → Enregistrer un achat\n"
         "📦 /stock → Résumé du stock\n"
         "📊 /rapport → Rapport hebdomadaire\n"
         "💰 /finances → Bilan financier\n"
-        "🔍 /chercher [nom] → Trouver un produit\n"
-        "📝 /annonce [ref] → Générer une annonce\n"
-        "❓ /aide → Toutes les commandes"
+        "🔍 /chercher nom → Trouver un produit\n"
+        "📝 /annonce ref → Générer une annonce\n"
+        "❓ /aide → Toutes les commandes",
+        parse_mode=None
     )
 
 async def aide(update: Update, context: ContextTypes.DEFAULT_TYPE):
