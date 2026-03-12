@@ -420,6 +420,22 @@ async def archiver(data: dict, ref: str, prix_achat_total: float, source: str,
                 else:
                     refs_creees.append(ref_i)
 
+        # Notifier Post&Sell du nouveau produit à lister
+        if refs_creees:
+            try:
+                from modules.routing import notify_new_product
+                titre = data.get("titre_ebay") or data.get("objet", "Article")
+                prix_vente = data.get("prix_moyen", 0)
+                await notify_new_product(
+                    ref=refs_creees[0],
+                    titre=titre,
+                    prix_achat=round(prix_achat_total / quantite, 2) if quantite else prix_achat_total,
+                    quantite=quantite,
+                    prix_vente_estime=prix_vente
+                )
+            except Exception as re:
+                logger.warning(f"notify_new_product skipped: {re}")
+
         return refs_creees
     except Exception as e:
         logger.error(f"archiver error: {e}", exc_info=True)
