@@ -670,8 +670,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         data_flux = session.get("flux_data", {})
         data_flux["prix_revente"] = nouveau_prix
-        data_flux["prix_lbc"] = round(nouveau_prix * 0.9, 2)
-        data_flux["prix_vinted"] = round(nouveau_prix * 0.8, 2)
         session["flux_data"] = data_flux
         session["mode"] = "flux_validation"
         from modules.flux import formater_annonce
@@ -687,24 +685,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         modif = update.message.text.strip()
         data_flux = session.get("flux_data", {})
         modif_lower = modif.lower()
-        if "titre:" in modif_lower:
-            idx = modif_lower.index("titre:") + 6
-            titre = modif[idx:].strip().strip(":")
-            data_flux["titre_ebay"] = titre[:80]
-            data_flux["titre_lbc"] = titre[:70]
-            data_flux["titre_vinted"] = titre[:60]
-        elif "prix:" in modif_lower:
-            idx = modif_lower.index("prix:") + 5
+        if "titre" in modif_lower and ":" in modif:
+            idx = modif.index(":") + 1
+            titre = modif[idx:].strip()
+            data_flux["titre"] = titre
+            data_flux["titre_ebay"] = titre
+            data_flux["titre_lbc"] = titre
+            data_flux["titre_vinted"] = titre
+        elif "prix" in modif_lower and ":" in modif:
+            idx = modif.index(":") + 1
             try:
                 nouveau_prix = float(modif[idx:].strip().replace(",", "."))
                 data_flux["prix_revente"] = nouveau_prix
             except ValueError:
                 pass
-        elif "description:" in modif_lower:
-            idx = modif_lower.index("description:") + 12
+        elif "description" in modif_lower and ":" in modif:
+            idx = modif.index(":") + 1
             data_flux["description"] = modif[idx:].strip()
-        elif "etat:" in modif_lower:
-            idx = modif_lower.index("etat:") + 5
+        elif "etat" in modif_lower and ":" in modif:
+            idx = modif.index(":") + 1
             data_flux["caption"] = modif[idx:].strip()
         session["flux_data"] = data_flux
         session["mode"] = "flux_validation"
