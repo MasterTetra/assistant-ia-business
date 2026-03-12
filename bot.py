@@ -594,29 +594,63 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── MODES ACTIFS EN PRIORITÉ ─────────────────────────
     logger.info(f"handle_text: mode={session.get('mode')!r} text={text!r}")
     if session.get("mode") == "flux_attente_achat_complet":
-        raw_prix = update.message.text.strip().replace(" ", "").replace("€", "")
+        raw = update.message.text.strip().replace(" ", "").replace("€", "").replace(",", ".")
         try:
-            if "," in raw_prix and "." not in raw_prix:
-                raw_prix = raw_prix.replace(",", ".")
-            prix_achat = float(raw_prix)
-        except (ValueError, IndexError):
-            await update.message.reply_text("⚠️ Tapez juste un nombre, ex: 45")
+            if raw == "0":
+                prix_total = 0.0
+                quantite = 1
+                prix_unitaire = 0.0
+            elif ";" in raw:
+                parts = raw.split(";")
+                prix_total = float(parts[0])
+                quantite = int(parts[1])
+                if quantite <= 0:
+                    raise ValueError("quantite invalide")
+                prix_unitaire = round(prix_total / quantite, 4)
+            else:
+                prix_total = float(raw)
+                quantite = 1
+                prix_unitaire = prix_total
+        except (ValueError, IndexError, ZeroDivisionError):
+            await update.message.reply_text(
+                "Format invalide. Exemples :\n"
+                "  6;60   pour 6 euros et 60 unites\n"
+                "  400;1  pour 400 euros et 1 exemplaire\n"
+                "  0      pas encore achete"
+            )
             return
 
-        session["flux_prix_achat"] = prix_achat
+        session["flux_prix_achat"] = prix_unitaire
+        session["flux_prix_total"] = prix_total
+        session["flux_quantite"] = quantite
         session["mode"] = "flux_validation_achat"
         data_flux = session.get("flux_data") or {}
-
-        from modules.flux import formater_rentabilite
-        rentabilite = formater_rentabilite(data_flux, prix_achat)
         achat_max = data_flux.get("achat_max", 0)
-        marge_ok = (achat_max == 0) or (prix_achat <= achat_max)
+        prix_revente = data_flux.get("prix_revente", 0)
+        marge_u = round(prix_revente - prix_unitaire, 2)
+        marge_pct = round(marge_u / prix_unitaire * 100) if prix_unitaire > 0 else 0
+        marge_totale = round(marge_u * quantite, 2)
+        marge_ok = (achat_max == 0) or (prix_unitaire == 0) or (prix_unitaire <= achat_max)
+        statut = "BON ACHAT" if marge_ok else f"AU-DESSUS du seuil ({achat_max} euros/unite conseille)"
 
         from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
-        kb_ok = IKM([[
-            IKB("✅ Générer l'annonce", callback_data="flux_continuer"),
+        kb = IKM([[
+            IKB("✅ Generer l'annonce", callback_data="flux_continuer"),
             IKB("❌ Annuler", callback_data="flux_annuler"),
         ]])
+        await update.message.reply_text(
+            f"RECAP ACHAT\n"
+            f"Quantite      : {quantite} unite(s)\n"
+            f"Prix total    : {prix_total} euros\n"
+            f"Prix unitaire : {prix_unitaire} euros\n\n"
+            f"RENTABILITE\n"
+            f"Prix revente  : {prix_revente} euros/unite\n"
+            f"Marge/unite   : +{marge_u} euros (+{marge_pct}%)\n"
+            f"Marge totale  : +{marge_totale} euros\n"
+            f"{statut}\n\n"
+            f"On genere l'annonce ?",
+            reply_markup=kb
+        )
         return
 
     elif any(w in t for w in ["rapport", "bilan"]):
