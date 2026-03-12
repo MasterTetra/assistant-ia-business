@@ -389,15 +389,31 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Tapez juste le chiffre, ex: 45"
         )
 
+    elif data == "flux_mod_ajouter":
+        session = get_session(query.from_user.id)
+        session["mode"] = "flux_attente_ajout"
+        await query.edit_message_text(
+            "➕ Que voulez-vous ajouter ou corriger ?\n\n"
+            "Tapez librement ce que vous voulez ajouter, préciser ou retirer :\n\n"
+            "Exemples :\n"
+            "• dimensions: 29x12x8 cm\n"
+            "• ajouter: abat-jour non inclus, système électrique à réviser\n"
+            "• retirer: la phrase sur la livraison\n"
+            "• préciser: objet acheté dans une succession\n\n"
+            "Le reste de l\'annonce sera conservé."
+        )
+
     elif data == "flux_mod_annonce":
         session = get_session(query.from_user.id)
         session["mode"] = "flux_attente_modif"
         await query.edit_message_text(
-            "✏️ Que voulez-vous modifier ?\n\n"
-            "Exemples :\n"
-            "• titre: Porte-clé Renault Sport damier métal neuf\n"
+            "✏️ RÉÉCRITURE COMPLÈTE\n\n"
+            "Tapez le nouveau texte pour remplacer l\'annonce :\n\n"
+            "• titre: Mon nouveau titre\n"
+            "• prix: 12\n"
             "• description: [votre texte complet]\n"
-            "• etat: neuf sous blister d'origine"
+            "• etat: neuf sous blister\n\n"
+            "⚠️ Attention : remplace entièrement le champ modifié."
         )
 
     elif data == "flux_annuler":
@@ -677,9 +693,52 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         annonce_txt = formater_annonce(data_flux)
         keyboard = IKM([
             [IKB("✅ Valider", callback_data="flux_valider"), IKB("✏️ Modifier prix", callback_data="flux_mod_prix")],
-            [IKB("✏️ Modifier annonce", callback_data="flux_mod_annonce"), IKB("❌ Annuler", callback_data="flux_annuler")]
+            [IKB("➕ Ajouter info", callback_data="flux_mod_ajouter"), IKB("✏️ Réécrire annonce", callback_data="flux_mod_annonce")],
+            [IKB("❌ Annuler", callback_data="flux_annuler")]
         ])
         await update.message.reply_text(annonce_txt, reply_markup=keyboard)
+
+    elif session.get("mode") == "flux_attente_ajout":
+        ajout = update.message.text.strip()
+        data_flux = session.get("flux_data", {})
+        # Demander à Claude d'intégrer l'ajout dans la description existante
+        from anthropic import AsyncAnthropic
+        from modules.flux import CLAUDE_MODEL
+        _client = AsyncAnthropic()
+        desc_actuelle = data_flux.get("description", "")
+        titre_actuel = data_flux.get("titre") or data_flux.get("titre_ebay", "")
+        prompt = (
+            f"Voici une annonce de vente en ligne :\n\n"
+            f"TITRE: {titre_actuel}\n\n"
+            f"DESCRIPTION:\n{desc_actuelle}\n\n"
+            f"L\'utilisateur veut apporter cette modification/ajout :\n{ajout}\n\n"
+            f"Réécris UNIQUEMENT la DESCRIPTION en intégrant cette modification. "
+            f"Conserve le style, le contenu existant, et intègre naturellement le changement. "
+            f"Réponds UNIQUEMENT avec la description réécrite, sans titre ni balises."
+        )
+        think = await update.message.reply_text("✏️ Intégration en cours...")
+        try:
+            r = await _client.messages.create(
+                model=CLAUDE_MODEL, max_tokens=800,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            nouvelle_desc = r.content[0].text.strip() if r.content else desc_actuelle
+            data_flux["description"] = nouvelle_desc
+        except Exception as e:
+            nouvelle_desc = desc_actuelle
+        await think.delete()
+        session["flux_data"] = data_flux
+        session["mode"] = "flux_validation"
+        from modules.flux import formater_annonce
+        from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
+        annonce_txt = formater_annonce(data_flux)
+        keyboard = IKM([
+            [IKB("✅ Valider", callback_data="flux_valider"), IKB("✏️ Modifier prix", callback_data="flux_mod_prix")],
+            [IKB("➕ Ajouter info", callback_data="flux_mod_ajouter"), IKB("✏️ Réécrire annonce", callback_data="flux_mod_annonce")],
+            [IKB("❌ Annuler", callback_data="flux_annuler")]
+        ])
+        await update.message.reply_text(annonce_txt, reply_markup=keyboard)
+        return
 
     elif session.get("mode") == "flux_attente_modif":
         modif = update.message.text.strip()
@@ -712,7 +771,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         annonce_txt = formater_annonce(data_flux)
         keyboard = IKM([
             [IKB("✅ Valider", callback_data="flux_valider"), IKB("✏️ Modifier prix", callback_data="flux_mod_prix")],
-            [IKB("✏️ Modifier annonce", callback_data="flux_mod_annonce"), IKB("❌ Annuler", callback_data="flux_annuler")]
+            [IKB("➕ Ajouter info", callback_data="flux_mod_ajouter"), IKB("✏️ Réécrire annonce", callback_data="flux_mod_annonce")],
+            [IKB("❌ Annuler", callback_data="flux_annuler")]
         ])
         await update.message.reply_text(annonce_txt, reply_markup=keyboard)
 
