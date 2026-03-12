@@ -62,15 +62,13 @@ CLAUDE_MODEL = "claude-sonnet-4-20250514"
 CLAUDE_MAX_TOKENS = 2000
 
 # ─── SUPERGROUPE TELEGRAM ─────────────────────────────────
-# IDs du supergroupe et de ses topics
 SUPERGROUP_ID = -1003827598521
 
-# Topics (message_thread_id) — à compléter après /start dans chaque topic
 TOPICS = {
-    "buy_search":         None,  # Buy & Search
-    "post_sell":          None,  # Post & Sell
-    "sales_notifications": None,  # Sales Notifications
-    "accounting_report":  None,  # Accounting Report
-    "taxation":           None,  # Taxation
-    "general":            None,  # General
+    "general":             None,  # Chat principal (pas de thread)
+    "taxation":            6,     # Taxation
+    "accounting_report":   5,     # Accounting Report
+    "sales_notifications": 13,    # Sales Notifications
+    "post_sell":           3,     # Post & Sell
+    "buy_search":          2,     # Buy & Search
 }
