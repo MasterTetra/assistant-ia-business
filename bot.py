@@ -207,12 +207,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await thinking_msg.delete()
         await send_long_message(msg, formater_analyse(data), parse_mode=None)
 
-        # Demander le prix d'achat avant de calculer la marge
         session["mode"] = "flux_attente_achat_complet"
         await msg.reply_text(
-            f"💶 Combien avez-vous payé cet objet ?\n\n"
-            f"Tapez le prix en euros (ex: 45) ou 0 si pas encore acheté.\n"
-            f"Prix d'achat maximum conseillé : {data['achat_max']} euros"
+            f"🛒 ACHAT\n\n"
+            f"Prix total paye + quantite :\n"
+            f"• 6;60   → 6 euros pour 60 unites (0.10 euro/unite)\n"
+            f"• 400;1  → 400 euros pour 1 exemplaire\n"
+            f"• 0      → pas encore achete\n\n"
+            f"Prix d'achat maximum conseille : {data['achat_max']} euros/unite"
         )
     except Exception as e:
         logger.error(f"Erreur flux: {e}")
@@ -615,64 +617,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             IKB("✅ Générer l'annonce", callback_data="flux_continuer"),
             IKB("❌ Annuler", callback_data="flux_annuler"),
         ]])
-        kb_warn = IKM([[
-            IKB("⚠️ Continuer quand même", callback_data="flux_continuer"),
-            IKB("❌ Abandonner", callback_data="flux_annuler"),
-        ]])
-
-        # Question unique : prix total + quantité
-        session["mode"] = "flux_attente_achat_complet"
-        await update.message.reply_text(
-            "🛒 ACHAT\n\n"
-            "Répondez avec le prix total payé et la quantité :\n\n"
-            "• `6;60` → 6€ pour 60 unités (0,10€/unité)\n"
-            "• `400;1` → 400€ pour 1 exemplaire\n"
-            "• `0` → pas encore acheté\n\n"
-            f"Prix d\'achat maximum conseillé : {data_flux.get('achat_max', 0)} euros/unité"
-        )
-        return
-
-    elif session.get("mode") == "flux_attente_quantite":
-        raw = update.message.text.strip().replace(" ", "")
-        try:
-            if ";" in raw:
-                parts = raw.split(";")
-                prix_total = float(parts[0].replace(",", "."))
-                quantite = int(parts[1])
-                session["flux_prix_total"] = prix_total
-                session["flux_prix_achat"] = round(prix_total / quantite, 4)
-            else:
-                quantite = int(raw)
-                prix_total = session.get("flux_prix_achat", 0) * quantite
-                session["flux_prix_total"] = prix_total
-            session["flux_quantite"] = quantite
-            session["mode"] = "flux_validation_achat"
-            data_flux = session.get("flux_data") or {}
-            prix_unitaire = session["flux_prix_achat"]
-            prix_revente = data_flux.get("prix_revente", 0)
-            marge_u = prix_revente - prix_unitaire
-            marge_pct = round(marge_u / prix_unitaire * 100) if prix_unitaire > 0 else 0
-            from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
-            kb = IKM([[
-                IKB("✅ Générer l'annonce", callback_data="flux_continuer"),
-                IKB("❌ Annuler", callback_data="flux_annuler"),
-            ]])
-            await update.message.reply_text(
-                f"📦 RECAP ACHAT\n"
-                f"Quantité        : {quantite} unité(s)\n"
-                f"Prix total      : {session['flux_prix_total']} euros\n"
-                f"Prix unitaire   : {prix_unitaire} euros\n"
-                f"Prix revente    : {prix_revente} euros/unité\n"
-                f"Marge unitaire  : +{round(marge_u, 2)} euros (+{marge_pct}%)\n"
-                f"Marge totale    : +{round(marge_u * quantite, 2)} euros\n\n"
-                "On génère l'annonce ?",
-                reply_markup=kb
-            )
-        except (ValueError, IndexError, ZeroDivisionError):
-            await update.message.reply_text(
-                "⚠️ Format invalide.\n"
-                "Exemples :\n• `1` → 1 exemplaire\n• `6;60` → 6€ pour 60 unités"
-            )
         return
 
     elif any(w in t for w in ["rapport", "bilan"]):
