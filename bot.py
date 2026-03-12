@@ -606,13 +606,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         achat_max = data_flux.get("achat_max", 0)
         marge_ok = (achat_max == 0) or (prix_achat <= achat_max)
 
-        kb_ok = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ Générer l'annonce", callback_data="flux_continuer"),
-            InlineKeyboardButton("❌ Annuler", callback_data="flux_annuler"),
+        from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
+        kb_ok = IKM([[
+            IKB("✅ Générer l'annonce", callback_data="flux_continuer"),
+            IKB("❌ Annuler", callback_data="flux_annuler"),
         ]])
-        kb_warn = InlineKeyboardMarkup([[
-            InlineKeyboardButton("⚠️ Continuer quand même", callback_data="flux_continuer"),
-            InlineKeyboardButton("❌ Abandonner", callback_data="flux_annuler"),
+        kb_warn = IKM([[
+            IKB("⚠️ Continuer quand même", callback_data="flux_continuer"),
+            IKB("❌ Abandonner", callback_data="flux_annuler"),
         ]])
 
         if marge_ok:
@@ -625,6 +626,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 rentabilite + "\n⚠️ Au-dessus du seuil — continuer quand même ?",
                 reply_markup=kb_warn
             )
+        return
 
     elif any(w in t for w in ["rapport", "bilan"]):
         periode = "mois" if "mois" in t else "semaine"
