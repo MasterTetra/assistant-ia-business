@@ -61,10 +61,6 @@ async def setup_notifications():
             <EventType>AuctionCheckoutComplete</EventType>
             <EventEnable>Enable</EventEnable>
         </NotificationEnable>
-        <NotificationEnable>
-            <EventType>ItemShipped</EventType>
-            <EventEnable>Enable</EventEnable>
-        </NotificationEnable>
     </UserDeliveryPreferenceArray>
 </SetNotificationPreferencesRequest>"""
 
