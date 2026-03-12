@@ -299,12 +299,20 @@ async def handle_makecom_notification(payload: dict) -> str:
 async def handle_webhook(request: web.Request) -> web.Response:
     """Point d'entrée unique pour tous les webhooks."""
     try:
-        body = await request.read()
+        content_type = request.headers.get("Content-Type", "").lower()
         logger.info(f"📥 Webhook POST reçu — headers: {dict(request.headers)}")
-        logger.info(f"📥 Webhook body: {body[:500]}")
-        payload = json.loads(body)
+
+        if "application/x-www-form-urlencoded" in content_type:
+            # Make.com form-data
+            data = await request.post()
+            payload = dict(data)
+            logger.info(f"📥 Webhook form-data: {payload}")
+        else:
+            body = await request.read()
+            logger.info(f"📥 Webhook body: {body[:500]}")
+            payload = json.loads(body)
     except Exception as e:
-        logger.error(f"Webhook parse error: {e}, body: {body[:200]}")
+        logger.error(f"Webhook parse error: {e}")
         return web.Response(text="bad request", status=400)
 
     # Identifier la source
