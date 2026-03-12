@@ -363,8 +363,10 @@ async def generer_ref() -> str:
         return f"RG-{annee}-001"
 
 
-async def archiver(data: dict, ref: str, prix_achat: float, source: str) -> bool:
+async def archiver(data: dict, ref: str, prix_achat_total: float, source: str,
+                   quantite: int = 1) -> bool:
     try:
+        prix_unitaire = round(prix_achat_total / quantite, 4) if quantite > 0 else prix_achat_total
         annonce = (
             f"TITRE EBAY: {data.get('titre_ebay', '')}\n"
             f"TITRE LBC: {data.get('titre_lbc', '')}\n"
@@ -373,16 +375,20 @@ async def archiver(data: dict, ref: str, prix_achat: float, source: str) -> bool
             f"MOTS-CLES: {data.get('mots_cles', '')}"
         )
         fields = {
-            "Reference": ref,
-            "Reference gestion": ref,
+            "Référence": ref,
+            "Référence gestion": ref,
             "Description": data.get("caption") or data.get("objet", ""),
-            "Prix achat": prix_achat,
+            "Prix achat": prix_unitaire,
+            "Prix achat total": prix_achat_total,
+            "Prix achat unitaire": prix_unitaire,
             "Prix vente": data["prix_revente"],
             "Source": source or "Non renseigne",
             "Statut": "en ligne",
-            "Annonce generee": annonce,
+            "Annonce générée": annonce,
             "Date achat": datetime.now().strftime("%Y-%m-%d"),
             "Notes": data.get("conseil", ""),
+            "Quantite totale": quantite,
+            "Quantite vendue": 0,
         }
         async with httpx.AsyncClient(timeout=20) as http:
             resp = await http.post(
