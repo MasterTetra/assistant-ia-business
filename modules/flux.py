@@ -334,35 +334,46 @@ def formater_annonce(data: dict) -> str:
     )
 
 
-async def generer_ref() -> str:
-    annee = datetime.now().strftime("%Y")
+async def get_next_numero_global() -> int:
+    """Retourne le prochain numéro global (toutes refs confondues)."""
     try:
         async with httpx.AsyncClient(timeout=20) as http:
             resp = await http.get(
                 f"{AIRTABLE_URL}/{TABLE_PRODUITS}",
                 headers=HEADERS_AT,
                 params={
-                    "fields[]": ["Reference gestion"],
-                    "filterByFormula": f"FIND('{annee}', {{Reference gestion}})",
+                    "fields[]": ["Référence gestion"],
                     "maxRecords": 1000
                 }
             )
         records = resp.json().get("records", [])
         nums = []
         for r in records:
-            ref = r.get("fields", {}).get("Reference gestion", "")
-            m = re.search(r'RG-\d{4}-(\d+)', ref)
+            ref = r.get("fields", {}).get("Référence gestion", "")
+            m = re.search(r'AV-\d{8}-(\d+)', ref)
             if m:
                 nums.append(int(m.group(1)))
-        n = max(nums) + 1 if nums else 1
-        return f"RG-{annee}-{str(n).zfill(3)}"
+        return max(nums) + 1 if nums else 1
     except Exception as e:
-        logger.warning(f"generer_ref error: {e}")
-        return f"RG-{annee}-001"
+        logger.warning(f"get_next_numero_global error: {e}")
+        return 1
+
+
+async def generer_ref() -> str:
+    """Génère une référence unique AV-YYYYMMDD-NNNN."""
+    date = datetime.now().strftime("%Y%m%d")
+    n = await get_next_numero_global()
+    return f"AV-{date}-{str(n).zfill(4)}"
 
 
 async def archiver(data: dict, ref: str, prix_achat_total: float, source: str,
-                   quantite: int = 1) -> bool:
+                   quantite: int = 1) -> list:
+    """
+    Crée UNE ligne par unité dans Airtable.
+    - Si quantite=1 : 1 ligne, prix_achat_total = prix unitaire
+    - Si quantite=N : N lignes, chacune avec prix_unitaire = total/N
+    Retourne la liste des références créées.
+    """
     try:
         prix_unitaire = round(prix_achat_total / quantite, 4) if quantite > 0 else prix_achat_total
         titre = data.get("titre") or data.get("titre_ebay") or data.get("objet", "")
@@ -371,31 +382,46 @@ async def archiver(data: dict, ref: str, prix_achat_total: float, source: str,
             f"{data.get('description', '')}\n\n"
             f"MOTS-CLES: {data.get('mots_cles', '')}"
         )
-        fields = {
-            "Référence": ref,
-            "Référence gestion": ref,
-            "Description": data.get("caption") or data.get("objet", ""),
-            "Prix achat total": round(float(prix_achat_total), 2),
-            "Prix achat unitaire": round(float(prix_unitaire), 4),
-            "Prix vente": round(float(data["prix_revente"]), 2),
-            "Source": source or "Non renseigne",
-            "Statut": "en ligne",
-            "Annonce générée": annonce,
-            "Date achat": datetime.now().strftime("%Y-%m-%d"),
-            "Notes": data.get("conseil", ""),
-            "Quantite totale": int(quantite),
-            "Quantite vendue": 0,
-        }
-        async with httpx.AsyncClient(timeout=20) as http:
-            resp = await http.post(
-                f"{AIRTABLE_URL}/{TABLE_PRODUITS}",
-                headers=HEADERS_AT,
-                json={"fields": fields}
-            )
-        if resp.status_code not in (200, 201):
-            logger.error(f"Airtable error {resp.status_code}: {resp.text[:500]}")
-            return False
-        return True
+        description_objet = data.get("caption") or data.get("objet", "")
+        date_achat = datetime.now().strftime("%Y-%m-%d")
+        source_val = source or "Non renseigne"
+        prix_vente = round(float(data["prix_revente"]), 2)
+        notes = data.get("conseil", "")
+
+        # Récupérer le prochain numéro global une seule fois
+        num_debut = await get_next_numero_global()
+        date_str = datetime.now().strftime("%Y%m%d")
+
+        refs_creees = []
+        async with httpx.AsyncClient(timeout=30) as http:
+            for i in range(quantite):
+                ref_i = f"AV-{date_str}-{str(num_debut + i).zfill(4)}"
+                fields = {
+                    "Référence": ref_i,
+                    "Référence gestion": ref_i,
+                    "Description": description_objet,
+                    "Prix achat total": round(float(prix_achat_total), 2),
+                    "Prix achat unitaire": round(float(prix_unitaire), 4),
+                    "Prix vente": prix_vente,
+                    "Source": source_val,
+                    "Statut": "en ligne",
+                    "Annonce générée": annonce,
+                    "Date achat": date_achat,
+                    "Notes": notes,
+                    "Quantite totale": 1,
+                    "Quantite vendue": 0,
+                }
+                resp = await http.post(
+                    f"{AIRTABLE_URL}/{TABLE_PRODUITS}",
+                    headers=HEADERS_AT,
+                    json={"fields": fields}
+                )
+                if resp.status_code not in (200, 201):
+                    logger.error(f"Airtable error ligne {i+1}: {resp.status_code} {resp.text[:300]}")
+                else:
+                    refs_creees.append(ref_i)
+
+        return refs_creees
     except Exception as e:
         logger.error(f"archiver error: {e}", exc_info=True)
-        return False
+        return []
