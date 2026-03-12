@@ -60,3 +60,17 @@ MIN_MARGIN_PERCENT = 40.0
 # ─── MODÈLE IA ────────────────────────────────────────────
 CLAUDE_MODEL = "claude-sonnet-4-20250514"
 CLAUDE_MAX_TOKENS = 2000
+
+# ─── SUPERGROUPE TELEGRAM ─────────────────────────────────
+# IDs du supergroupe et de ses topics
+SUPERGROUP_ID = -1003827598521
+
+# Topics (message_thread_id) — à compléter après /start dans chaque topic
+TOPICS = {
+    "buy_search":         None,  # Buy & Search
+    "post_sell":          None,  # Post & Sell
+    "sales_notifications": None,  # Sales Notifications
+    "accounting_report":  None,  # Accounting Report
+    "taxation":           None,  # Taxation
+    "general":            None,  # General
+}
