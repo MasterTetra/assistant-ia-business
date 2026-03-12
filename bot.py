@@ -5,6 +5,7 @@ Bot Telegram principal — compatible Python 3.11/3.12/3.13
 import os
 import json
 import asyncio
+import httpx
 import logging
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
