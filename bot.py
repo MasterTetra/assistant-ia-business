@@ -670,6 +670,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         data_flux = session.get("flux_data", {})
         data_flux["prix_revente"] = nouveau_prix
+        data_flux["prix_lbc"] = round(nouveau_prix * 0.9, 2)
+        data_flux["prix_vinted"] = round(nouveau_prix * 0.8, 2)
         session["flux_data"] = data_flux
         session["mode"] = "flux_validation"
         from modules.flux import formater_annonce
@@ -684,21 +686,26 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif session.get("mode") == "flux_attente_modif":
         modif = update.message.text.strip()
         data_flux = session.get("flux_data", {})
-        if modif.lower().startswith("titre:"):
-            titre = modif[6:].strip()
+        modif_lower = modif.lower()
+        if "titre:" in modif_lower:
+            idx = modif_lower.index("titre:") + 6
+            titre = modif[idx:].strip().strip(":")
             data_flux["titre_ebay"] = titre[:80]
             data_flux["titre_lbc"] = titre[:70]
             data_flux["titre_vinted"] = titre[:60]
-        elif modif.lower().startswith("prix:"):
+        elif "prix:" in modif_lower:
+            idx = modif_lower.index("prix:") + 5
             try:
-                nouveau_prix = float(modif[5:].strip().replace(",", "."))
+                nouveau_prix = float(modif[idx:].strip().replace(",", "."))
                 data_flux["prix_revente"] = nouveau_prix
             except ValueError:
                 pass
-        elif modif.lower().startswith("description:"):
-            data_flux["description"] = modif[12:].strip()
-        elif modif.lower().startswith("etat:"):
-            data_flux["caption"] = modif[5:].strip()
+        elif "description:" in modif_lower:
+            idx = modif_lower.index("description:") + 12
+            data_flux["description"] = modif[idx:].strip()
+        elif "etat:" in modif_lower:
+            idx = modif_lower.index("etat:") + 5
+            data_flux["caption"] = modif[idx:].strip()
         session["flux_data"] = data_flux
         session["mode"] = "flux_validation"
         from modules.flux import formater_annonce
