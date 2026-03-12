@@ -115,7 +115,7 @@ async def create_product(photos: list, prix_achat: float, source: str, descripti
         "Référence": ref,
         "Référence gestion": ref,
         "Date achat": now,
-        "Prix achat": prix_achat,
+        "Prix achat unitaire": prix_achat,
         "Source": source,
         "Statut": "acheté",
         "Emplacement": location,
@@ -163,7 +163,7 @@ async def get_stock_summary() -> str:
             resp = await http.get(
                 f"{AIRTABLE_URL}/{TABLE_PRODUITS}",
                 headers=HEADERS,
-                params={"maxRecords": 500, "fields[]": ["Référence", "Statut", "Prix achat", "Prix vente", "Source", "Emplacement"]}
+                params={"maxRecords": 500, "fields[]": ["Référence", "Statut", "Prix achat unitaire", "Prix vente", "Source", "Emplacement"]}
             )
 
         if resp.status_code != 200:
@@ -180,7 +180,7 @@ async def get_stock_summary() -> str:
             f = rec.get("fields", {})
             statut = f.get("Statut", "inconnu")
             by_status[statut] = by_status.get(statut, 0) + 1
-            total_investi += f.get("Prix achat", 0) or 0
+            total_investi += f.get("Prix achat unitaire", 0) or 0
             total_vente_potentielle += f.get("Prix vente", 0) or 0
 
         total = len(records)
@@ -245,7 +245,7 @@ async def find_product(query: str) -> str:
             nom = f.get("Nom", "Sans nom")
             statut = f.get("Statut", "?")
             loc = f.get("Emplacement", "Non attribué")
-            prix_a = f.get("Prix achat", 0)
+            prix_a = f.get("Prix achat unitaire", 0)
             prix_v = f.get("Prix vente", 0)
             lines += [
                 f"━━━━━━━━━━━━━━━",
