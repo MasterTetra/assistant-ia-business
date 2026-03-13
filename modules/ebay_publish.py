@@ -249,12 +249,20 @@ async def publier_sur_ebay(
       <ShippingType>Flat</ShippingType>
       <ShippingServiceOptions>
         <ShippingServicePriority>1</ShippingServicePriority>
-        <ShippingService>FR_LaPosteColissimo</ShippingService>
+        <ShippingService>FR_Chronopost</ShippingService>
         <ShippingServiceCost currencyID="EUR">0.00</ShippingServiceCost>
+        <ShippingServiceAdditionalCost currencyID="EUR">0.00</ShippingServiceAdditionalCost>
         <FreeShipping>true</FreeShipping>
+      </ShippingServiceOptions>
+      <ShippingServiceOptions>
+        <ShippingServicePriority>2</ShippingServicePriority>
+        <ShippingService>FR_Other</ShippingService>
+        <ShippingServiceCost currencyID="EUR">0.00</ShippingServiceCost>
+        <ShippingServiceAdditionalCost currencyID="EUR">0.00</ShippingServiceAdditionalCost>
       </ShippingServiceOptions>
     </ShippingDetails>
     <ShipToLocations>FR</ShipToLocations>
+    <ShipToLocations>Worldwide</ShipToLocations>
     {photos_xml}
   </Item>
 """
