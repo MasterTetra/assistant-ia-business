@@ -230,14 +230,16 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await thinking_msg.delete()
         await send_long_message(msg, formater_analyse(data), parse_mode=None)
 
-        session["mode"] = "flux_attente_achat_complet"
+        session["mode"] = "flux_attente_achat"
+        score = data.get("score", 5.0)
+        from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
+        kb = IKM([[
+            IKB("✅ ACHETER", callback_data="flux_acheter"),
+            IKB("❌ IGNORER", callback_data="flux_ignorer"),
+        ]])
         await msg.reply_text(
-            f"🛒 ACHAT\n\n"
-            f"Prix total paye + quantite :\n"
-            f"• 6;60   → 6 euros pour 60 unites (0.10 euro/unite)\n"
-            f"• 400;1  → 400 euros pour 1 exemplaire\n"
-            f"• 0      → pas encore achete\n\n"
-            f"Prix d'achat maximum conseille : {data['achat_max']} euros/unite"
+            f"Prix achat maximum conseille : {data['achat_max']}€\nScore opportunite : {score}/10\n\nTu veux acheter ?",
+            reply_markup=kb
         )
     except Exception as e:
         logger.error(f"Erreur flux: {e}")
@@ -340,69 +342,43 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session["vendre_data"] = None
         await query.edit_message_text("❌ Vente annulée.")
 
-    elif data == "flux_continuer":
+    elif data == "flux_acheter":
         session = get_session(query.from_user.id)
         data_flux = session.get("flux_data")
         if not data_flux:
             await query.edit_message_text("⚠️ Session expirée. Renvoie une photo.")
             return
-        thinking = await query.message.reply_text("📝 Génération de l'annonce...")
-        try:
-            from modules.flux import generer_annonce, formater_annonce
-            data_flux = await generer_annonce(data_flux)
-            session["flux_data"] = data_flux
-            session["mode"] = "flux_validation"
-            await thinking.delete()
-            annonce_txt = formater_annonce(data_flux)
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("✅ Valider", callback_data="flux_valider"),
-                    InlineKeyboardButton("✏️ Modifier prix", callback_data="flux_mod_prix"),
-                ],
-                [
-                    InlineKeyboardButton("✏️ Modifier annonce", callback_data="flux_mod_annonce"),
-                    InlineKeyboardButton("❌ Annuler", callback_data="flux_annuler"),
-                ]
-            ])
-            if len(annonce_txt) > 3500:
-                await query.message.reply_text(annonce_txt[:3500])
-                await query.message.reply_text(annonce_txt[3500:], reply_markup=keyboard)
-            else:
-                await query.message.reply_text(annonce_txt, reply_markup=keyboard)
-        except Exception as e:
-            await thinking.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
+        session["mode"] = "flux_attente_prix_achat"
+        achat_max = data_flux.get("achat_max", 0)
+        await query.edit_message_text(
+            f"🛒 ACHAT CONFIRME\n\n"
+            f"Prix total payé + quantité :\n"
+            f"  6;60   → 6€ pour 60 unités\n"
+            f"  400;1  → 400€ pour 1 exemplaire\n\n"
+            f"Prix d'achat maximum conseillé : {achat_max}€/unité"
+        )
 
-    elif data == "flux_valider":
+    elif data == "flux_ignorer":
+        session = get_session(query.from_user.id)
+        session["mode"] = None
+        session["flux_data"] = None
+        await query.edit_message_text("❌ Opportunité ignorée.")
+
+    elif data == "flux_continuer":
+        # Rétrocompat — redirige vers flux_acheter
         session = get_session(query.from_user.id)
         data_flux = session.get("flux_data")
         if not data_flux:
-            await query.edit_message_text("⚠️ Session expirée.")
+            await query.edit_message_text("⚠️ Session expirée. Renvoie une photo.")
             return
-        thinking = await query.message.reply_text("💾 Archivage...")
-        try:
-            from modules.flux import generer_ref, archiver
-            ref = await generer_ref()
-            prix_achat = session.get("flux_prix_achat", 0)
-            prix_total = session.get("flux_prix_total", prix_achat)
-            quantite = session.get("flux_quantite", 1)
-            source = session.get("flux_source", "")
-            ok = await archiver(data_flux, ref, prix_total, source, quantite)
-            session["mode"] = None
-            session["flux_data"] = None
-            if ok:
-                await thinking.edit_text(
-                    f"✅ ARCHIVE\n\n"
-                    f"Référence : {ref}\n"
-                    f"Titre eBay : {data_flux['titre_ebay']}\n"
-                    f"Prix : {data_flux['prix_revente']} euros\n\n"
-                    f"📋 Annonce LBC/Vinted :\n"
-                    f"{data_flux['titre_lbc']}\n\n"
-                    f"Quand vendu → /statut {ref} vendu eBay"
-                )
-            else:
-                await thinking.edit_text("⚠️ Erreur Airtable — vérifiez la base.")
-        except Exception as e:
-            await thinking.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
+        session["mode"] = "flux_attente_prix_achat"
+        await query.edit_message_text("🛒 Format : prix_total;quantite\nEx: 40;1")
+
+    elif data == "flux_valider":
+        # Rétrocompat — ce bouton n'est plus dans le flux principal
+        # mais reste actif pour les sessions en cours
+        session = get_session(query.from_user.id)
+        await query.edit_message_text("ℹ️ Utilise le nouveau flux : renvoie une photo et clique ACHETER.")
 
     elif data == "flux_mod_prix":
         session = get_session(query.from_user.id)
@@ -638,14 +614,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── MODES ACTIFS EN PRIORITÉ ─────────────────────────
     logger.info(f"handle_text: mode={session.get('mode')!r} text={text!r}")
-    if session.get("mode") == "flux_attente_achat_complet":
+    if session.get("mode") == "flux_attente_prix_achat":
         raw = update.message.text.strip().replace(" ", "").replace("€", "").replace(",", ".")
         try:
-            if raw == "0":
-                prix_total = 0.0
-                quantite = 1
-                prix_unitaire = 0.0
-            elif ";" in raw:
+            if ";" in raw:
                 parts = raw.split(";")
                 prix_total = float(parts[0])
                 quantite = int(parts[1])
@@ -659,16 +631,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except (ValueError, IndexError, ZeroDivisionError):
             await update.message.reply_text(
                 "Format invalide. Exemples :\n"
-                "  6;60   pour 6 euros et 60 unites\n"
-                "  400;1  pour 400 euros et 1 exemplaire\n"
-                "  0      pas encore achete"
+                "  6;60   → 6€ pour 60 unites\n"
+                "  400;1  → 400€ pour 1 exemplaire"
             )
             return
 
         session["flux_prix_achat"] = prix_unitaire
         session["flux_prix_total"] = prix_total
         session["flux_quantite"] = quantite
-        session["mode"] = "flux_validation_achat"
+        session["mode"] = None
         data_flux = session.get("flux_data") or {}
         achat_max = data_flux.get("achat_max", 0)
         prix_revente = data_flux.get("prix_revente", 0)
@@ -676,26 +647,41 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         marge_pct = round(marge_u / prix_unitaire * 100) if prix_unitaire > 0 else 0
         marge_totale = round(marge_u * quantite, 2)
         marge_ok = (achat_max == 0) or (prix_unitaire == 0) or (prix_unitaire <= achat_max)
-        statut = "BON ACHAT" if marge_ok else f"AU-DESSUS du seuil ({achat_max} euros/unite conseille)"
+        statut_icon = "✅" if marge_ok else "⚠️"
+        statut_txt = "BON ACHAT" if marge_ok else f"AU-DESSUS du seuil ({achat_max}€/u conseille)"
 
-        from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
-        kb = IKM([[
-            IKB("✅ Generer l'annonce", callback_data="flux_continuer"),
-            IKB("❌ Annuler", callback_data="flux_annuler"),
-        ]])
-        await update.message.reply_text(
-            f"RECAP ACHAT\n"
-            f"Quantite      : {quantite} unite(s)\n"
-            f"Prix total    : {prix_total} euros\n"
-            f"Prix unitaire : {prix_unitaire} euros\n\n"
-            f"RENTABILITE\n"
-            f"Prix revente  : {prix_revente} euros/unite\n"
-            f"Marge/unite   : +{marge_u} euros (+{marge_pct}%)\n"
-            f"Marge totale  : +{marge_totale} euros\n"
-            f"{statut}\n\n"
-            f"On genere l'annonce ?",
-            reply_markup=kb
-        )
+        # Archiver dans Airtable directement — sans annonce
+        thinking = await update.message.reply_text("💾 Création fiche produit...")
+        try:
+            from modules.flux import generer_ref, archiver
+            ref = await generer_ref()
+            source = session.get("flux_source", "sourcing")
+            refs = await archiver(data_flux, ref, prix_total, source, quantite)
+            session["flux_data"] = None
+            if refs:
+                recap = (
+                    f"✅ ACHAT CONFIRME\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🏷 {data_flux.get('objet', 'Article')}\n"
+                    f"🔖 Ref : {refs[0]}"
+                    + (f" → {refs[-1]}" if len(refs) > 1 else "") +
+                    f"\n💶 {prix_unitaire}€/u × {quantite}"
+                    + (f" = {prix_total}€" if quantite > 1 else "") +
+                    f"\n\n📊 RENTABILITE\n"
+                    f"  Revente estimée : {prix_revente}€\n"
+                    f"  Marge/unite     : +{marge_u}€ (+{marge_pct}%)\n"
+                    f"  Marge totale    : +{marge_totale}€\n"
+                    f"  {statut_icon} {statut_txt}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📦 Fiche créée → General (Inventory)\n"
+                    f"➡️ /listing {refs[0]} dans Post&Sell pour créer l'annonce"
+                )
+                await thinking.edit_text(recap)
+            else:
+                await thinking.edit_text("⚠️ Erreur Airtable — vérifiez la base.")
+        except Exception as e:
+            logger.error(f"archiver error: {e}", exc_info=True)
+            await thinking.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
         return
 
     elif any(w in t for w in ["rapport", "bilan"]):
