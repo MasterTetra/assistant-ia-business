@@ -474,22 +474,24 @@ async def archiver(data: dict, ref: str, prix_achat_total: float, source: str,
                     "Référence": ref_i,
                     "Référence gestion": ref_i,
                     "Description": description_objet,
-                    "Prix achat total": round(float(prix_achat_total), 2) if i == 0 else 0,
-                    "Prix achat unitaire": round(float(prix_unitaire), 4),
-                    "Prix vente": prix_vente_estime,
+                    "Prix achat unitaire": round(float(prix_unitaire), 2),
+                    "Prix vente": float(prix_vente_estime),
                     "Source": source_val,
                     "Statut": "en stockage",
                     "Date achat": date_achat,
                     "Quantite totale": 1,
-                    "Quantite vendue": 0,
                 }
+                # Prix achat total uniquement sur la première ligne
+                if i == 0:
+                    fields["Prix achat total"] = round(float(prix_achat_total), 2)
                 resp = await http.post(
                     f"{AIRTABLE_URL}/{TABLE_PRODUITS}",
                     headers=HEADERS_AT,
                     json={"fields": fields}
                 )
                 if resp.status_code not in (200, 201):
-                    logger.error(f"Airtable error ligne {i+1}: {resp.status_code} {resp.text[:300]}")
+                    logger.error(f"Airtable error ligne {i+1}: {resp.status_code} | {resp.text[:500]}")
+                    logger.error(f"Fields envoyés : {fields}")
                 else:
                     refs_creees.append(ref_i)
                     logger.info(f"✅ Airtable créé : {ref_i}")
