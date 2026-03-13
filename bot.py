@@ -890,11 +890,16 @@ async def _publier_lot(lot: dict, app) -> dict:
     quantite = lot["quantite"]
     photo_urls = convertir_liens_drive(lot["photos"])
 
-    # Extraire description et mots-clés de l'annonce
-    desc_match = _re.search(r"TITRE:.+?\n\n(.+?)\n\nMOTS-CLES:", annonce, _re.DOTALL)
-    description = desc_match.group(1).strip() if desc_match else annonce
-    mots_match = _re.search(r"MOTS-CLES:\s*(.+)", annonce)
-    mots_cles = mots_match.group(1).strip() if mots_match else ""
+    # Extraire description et mots-clés de l'annonce (format : DESCRIPTION\n...\nMOTS-CLES\n...)
+    desc_match = _re.search(r"DESCRIPTION\s*\n(.+?)\nMOTS-CLES", annonce, _re.DOTALL)
+    if desc_match:
+        description = desc_match.group(1).strip()
+    else:
+        # Fallback : tout ce qui est entre PRIX et MOTS-CLES
+        desc_match2 = _re.search(r"PRIX[^\n]+\n(.+?)(?:MOTS-CLES|$)", annonce, _re.DOTALL)
+        description = desc_match2.group(1).strip() if desc_match2 else annonce[:2000]
+    mots_match = _re.search(r"MOTS-CLES\s*:?\s*\n?(.+)", annonce, _re.DOTALL)
+    mots_cles = mots_match.group(1).strip()[:500] if mots_match else ""
 
     # Extraire l'état depuis les Notes (si disponible)
     etat = "Bon etat"
