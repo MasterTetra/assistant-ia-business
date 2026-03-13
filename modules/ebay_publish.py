@@ -43,6 +43,42 @@ CATEGORIES_DEFAUT = {
 FRAIS_EBAY_PCT = 0.13  # 13%
 
 
+def convertir_liens_drive(photos_raw: str) -> list:
+    """
+    Convertit les liens Google Drive partagés en URLs directes compatibles eBay.
+    Formats acceptés :
+      - https://drive.google.com/file/d/FILE_ID/view?...
+      - https://drive.google.com/open?id=FILE_ID
+      - https://drive.google.com/uc?export=view&id=FILE_ID  (déjà OK)
+    """
+    import re as _re
+    if not photos_raw:
+        return []
+    urls = []
+    for raw in photos_raw.split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        # Format /file/d/FILE_ID/view (lien de partage standard)
+        m = _re.search(r"/file/d/([a-zA-Z0-9_-]+)", raw)
+        if m:
+            urls.append(f"https://drive.google.com/uc?export=view&id={m.group(1)}")
+            continue
+        # Format ?id=FILE_ID
+        m = _re.search(r"[?&]id=([a-zA-Z0-9_-]+)", raw)
+        if m:
+            urls.append(f"https://drive.google.com/uc?export=view&id={m.group(1)}")
+            continue
+        # Déjà format direct
+        if "uc?export=view" in raw or "uc?id=" in raw:
+            urls.append(raw)
+            continue
+        # URL inconnue — garder
+        if raw.startswith("http"):
+            urls.append(raw)
+    return urls
+
+
 def _ebay_call(call_name: str, xml_body: str) -> str:
     """Effectue un appel synchrone à l'API eBay Trading."""
     headers = {**EBAY_HEADERS, "X-EBAY-API-CALL-NAME": call_name}
@@ -154,7 +190,9 @@ async def publier_sur_ebay(
     condition_id = condition_id_map.get(etat_ebay, "4000")
 
     categorie = _detect_categorie(titre, description)
-    photos_xml = _build_photos_xml(photo_urls)
+    # Convertir les liens Drive en URLs directes si nécessaire
+    photo_urls_direct = convertir_liens_drive(",".join(photo_urls)) if photo_urls else []
+    photos_xml = _build_photos_xml(photo_urls_direct)
 
     # Description HTML simple
     desc_html = f"<![CDATA[{description}]]>"
