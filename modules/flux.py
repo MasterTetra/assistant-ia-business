@@ -28,29 +28,37 @@ PALIERS = [
     (1000, 9999, 1.4, "x1.4"),
 ]
 
-PROMPT_STRUCT = """Tu es un expert en achat-revente. Analyse cet objet et remplis TOUS les champs.
+PROMPT_STRUCT = """Tu es un expert en achat-revente d'occasion. Analyse cet objet précisément.
 
-OBJET : {objet}
-INFOS : {caption}
-DONNEES MARCHE : {market_data}
+OBJET A ANALYSER : {objet}
+DESCRIPTION COMPLETE : {caption}
+DONNEES MARCHE TROUVEES : {market_data}
+
+REGLES STRICTES :
+- Utilise UNIQUEMENT les données de marché fournies ci-dessus pour les prix et le nombre d'annonces
+- Si les données sont insuffisantes, indique NB_ANNONCES: 0 et estime prudemment
+- NB_ANNONCES doit refléter le nombre REEL d'annonces trouvées dans DONNEES MARCHE, pas une estimation
+- PRIX_BAS, PRIX_MOYEN, PRIX_HAUT doivent être extraits des vrais prix trouvés, jamais inventés
+- PRIX_REVENTE = prix de vente réaliste basé sur les ventes CONCLUES, pas les annonces en cours
+- Si peu de données : être conservateur sur DEMANDE et VITESSE
 
 Reponds UNIQUEMENT avec ce format exact, sans asterisques, sans markdown :
 
-OBJET: [nom complet et précis]
+OBJET: [nom précis incluant marque et modèle si identifiables]
 ANNONCES:
 [plateforme | prix euros | VENDU ou EN VENTE | etat]
 PRIX_BAS: [chiffre — jamais 0]
 PRIX_MOYEN: [chiffre — jamais 0]
 PRIX_HAUT: [chiffre — jamais 0]
-PRIX_REVENTE: [prix conseille — jamais 0]
-NB_ANNONCES: [nombre]
+PRIX_REVENTE: [prix réaliste basé sur ventes conclues — jamais 0]
+NB_ANNONCES: [nombre exact trouvé dans les données]
 DEMANDE: [FORTE ou MOYENNE ou FAIBLE]
 VITESSE: [RAPIDE ou NORMALE ou LENTE]
-POIDS: [grammes]
+POIDS: [grammes estimés]
 DIMENSIONS: [{dimensions}]
 ENCOMBREMENT: [PETIT ou MOYEN ou GRAND]
 ENVOI: [FACILE ou MOYEN ou DIFFICILE]
-RAISON: [phrase courte sur le marche]"""
+RAISON: [phrase courte factuelle basée sur les données trouvées]"""
 
 PROMPT_ANNONCE = """Tu es expert en vente en ligne (eBay, Leboncoin, Vinted).
 
@@ -160,10 +168,18 @@ async def analyser_marche(photo_url: str, caption: str) -> dict:
             messages=[{"role": "user", "content": [{
                 "type": "text",
                 "text": (
-                    f'Recherche le prix de marche de cet objet : "{objet_court}"\n'
-                    f'Fais 2 recherches : 1) "{objet_court} eBay prix"  2) "{objet_court} eBay sold"\n'
-                    f'Donne-moi : liste des annonces avec prix, prix bas/moyen/haut des ventes conclues, '
-                    f'estimation prix revente. Texte court.'
+                    f'Recherche EXACTEMENT cet objet sur eBay.fr : "{objet_court}"\n'
+                    f'Description complète : {caption[:200] if caption else objet_court}\n'
+                    f'Fais ces 3 recherches :\n'
+                    f'1) "{objet_court} site:ebay.fr" — annonces actives\n'
+                    f'2) "{objet_court} ebay.fr vendu" — ventes conclues récentes\n'
+                    f'3) "{objet_court} occasion prix" — marché occasion\n'
+                    f'IMPORTANT : cherche des articles IDENTIQUES ou très similaires (même marque, même modèle, même état si possible).\n'
+                    f'Donne-moi :\n'
+                    f'- Liste des 5-10 annonces les plus proches avec prix exact et statut (vendu/en vente)\n'
+                    f'- Prix bas / moyen / haut UNIQUEMENT basé sur les vrais prix trouvés\n'
+                    f'- Nombre exact d\'annonces similaires trouvées\n'
+                    f'Texte court et factuel uniquement.'
                 )
             }]}]
         )
@@ -476,7 +492,6 @@ async def archiver(data: dict, ref: str, prix_achat_total: float, source: str,
                     "Description": description_objet,
                     "Prix achat unitaire": round(float(prix_unitaire), 2),
                     "Prix vente": float(prix_vente_estime),
-                    "Source": source_val,
                     "Statut": "en stockage",
                     "Date achat": date_achat,
                     "Quantite totale": 1,
@@ -484,6 +499,9 @@ async def archiver(data: dict, ref: str, prix_achat_total: float, source: str,
                 # Prix achat total uniquement sur la première ligne
                 if i == 0:
                     fields["Prix achat total"] = round(float(prix_achat_total), 2)
+                # Source uniquement si fournie (champ select Airtable)
+                if source_val and source_val != "Non renseigne":
+                    fields["Source"] = source_val
                 logger.info(f"📤 INSERT Airtable — fields: {fields}")
                 resp = await http.post(
                     f"{AIRTABLE_URL}/{TABLE_PRODUITS}",
