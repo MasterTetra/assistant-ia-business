@@ -211,8 +211,19 @@ async def publier_sur_ebay(
     photos_xml = _build_photos_xml(photo_urls_direct)
 
     # Échapper tout le contenu texte pour XML
-    titre_safe = echapper_xml(titre[:80])
-    desc_safe = echapper_xml(description)
+    # Nettoyer titre et description : supprimer tout tag XML parasite
+    import re as _re
+    def _nettoyer(texte):
+        # Supprimer balises XML
+        texte = _re.sub(r'<[^>]+>', '', texte)
+        # Supprimer lignes parasites (TITRE:, PRIX:, MOTS-CLES:)
+        texte = _re.sub(r'^(TITRE|PRIX|MOTS.CLES)\s*:.*$', '', texte, flags=_re.MULTILINE)
+        # Nettoyer lignes vides multiples
+        texte = _re.sub('\\n{3,}', '\\n\\n', texte).strip()
+        return texte
+
+    titre_safe = echapper_xml(_nettoyer(titre)[:80])
+    desc_safe = echapper_xml(_nettoyer(description))
 
     # Durée de l'annonce (GTC = Good Till Cancelled)
     xml_body = f"""
