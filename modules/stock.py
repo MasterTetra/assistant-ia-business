@@ -309,3 +309,71 @@ async def update_status(ref: str, new_status: str) -> str:
 
     except Exception as e:
         return f"⚠️ Erreur: {str(e)}"
+
+
+async def get_product_by_ref(ref: str) -> dict:
+    """Retourne les données d'un produit Airtable sous forme de dict flux-compatible."""
+    try:
+        async with httpx.AsyncClient(timeout=20) as http:
+            resp = await http.get(
+                f"{AIRTABLE_URL}/{TABLE_PRODUITS}",
+                headers=HEADERS,
+                params={
+                    "filterByFormula": f"{{Référence gestion}}='{ref}'",
+                    "maxRecords": 1
+                }
+            )
+        records = resp.json().get("records", [])
+        if not records:
+            return None
+        f = records[0]["fields"]
+        return {
+            "objet": f.get("Description", ref),
+            "caption": f.get("Description", ""),
+            "prix_revente": f.get("Prix vente", 0),
+            "prix_achat_unitaire": f.get("Prix achat unitaire", 0),
+            "prix_moyen": f.get("Prix vente", 0),
+            "demande": "MOYENNE",
+            "vitesse": "NORMALE",
+            "score": None,
+            "titre": "",
+            "description": "",
+            "mots_cles": "",
+        }
+    except Exception as e:
+        logger.error(f"get_product_by_ref error: {e}")
+        return None
+
+
+async def update_annonce(ref: str, annonce: str, etat: str = "") -> bool:
+    """Met à jour l'annonce générée et le statut dans Airtable."""
+    try:
+        async with httpx.AsyncClient(timeout=20) as http:
+            resp = await http.get(
+                f"{AIRTABLE_URL}/{TABLE_PRODUITS}",
+                headers=HEADERS,
+                params={
+                    "filterByFormula": f"{{Référence gestion}}='{ref}'",
+                    "maxRecords": 1
+                }
+            )
+        records = resp.json().get("records", [])
+        if not records:
+            return False
+        record_id = records[0]["id"]
+        fields = {
+            "Annonce générée": annonce,
+            "Statut": "en ligne",
+        }
+        if etat:
+            fields["Notes"] = f"État : {etat}"
+        async with httpx.AsyncClient(timeout=20) as http:
+            resp = await http.patch(
+                f"{AIRTABLE_URL}/{TABLE_PRODUITS}/{record_id}",
+                headers=HEADERS,
+                json={"fields": fields}
+            )
+        return resp.status_code == 200
+    except Exception as e:
+        logger.error(f"update_annonce error: {e}")
+        return False
