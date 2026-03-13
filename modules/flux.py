@@ -55,15 +55,24 @@ RAISON: [phrase courte sur le marche]"""
 PROMPT_ANNONCE = """Tu es expert en vente en ligne (eBay, Leboncoin, Vinted).
 
 OBJET : {objet}
-DESCRIPTION : {description}
 ETAT : {etat}
-PRIX : {prix} euros
+DETAILS SUPPLEMENTAIRES : {details}
+DONNÉES MARCHÉ : {market_context}
+
+REGLES STRICTES :
+- NE PAS mentionner le prix dans le titre ni dans la description
+- NE PAS mentionner l'expédition, la livraison, le transport, les frais de port
+- NE PAS mentionner de remise en main propre
+- Titre : max 60 caracteres, mots-cles importants en premier, jamais de majuscules inutiles
+- Description : 200-300 mots, points forts, état précis, caractéristiques, usage idéal
+- Intégrer les DETAILS SUPPLEMENTAIRES naturellement dans la description
+- Si ETAT contient des défauts, les mentionner honnêtement dans la description
 
 Reponds UNIQUEMENT avec ce format exact, sans asterisques ni markdown :
 
-TITRE: [max 60 caracteres, mots-cles importants en premier, pas de majuscules inutiles]
+TITRE: [titre optimise SEO]
 DESCRIPTION:
-[200-300 mots, points forts, etat, caracteristiques, usage ideal]
+[description complète]
 FIN_DESCRIPTION
 MOTS_CLES: [15 mots-cles separes par virgules]"""
 
@@ -259,16 +268,21 @@ async def analyser_marche(photo_url: str, caption: str) -> dict:
     }
 
 
-async def generer_annonce(data: dict, etat: str = "") -> dict:
+async def generer_annonce(data: dict, etat: str = "", details: str = "") -> dict:
+    market_context = (
+        f"Marche : {data.get('demande','?')} demande, "
+        f"prix moyen {data.get('prix_moyen',0)}€, "
+        f"vitesse {data.get('vitesse','?')}"
+    )
     r = await _retry(
         client.messages.create,
         model=CLAUDE_MODEL,
         max_tokens=1500,
         messages=[{"role": "user", "content": PROMPT_ANNONCE.format(
             objet=data["objet"],
-            description=data["caption"],
             etat=etat or "Bon etat",
-            prix=data["prix_revente"]
+            details=details or "Aucun detail supplementaire",
+            market_context=market_context
         )}]
     )
     raw = r.content[0].text if r.content else ""
@@ -332,26 +346,59 @@ def formater_analyse(data: dict) -> str:
     )
 
 
-def formater_rentabilite(data: dict, prix_achat: float) -> str:
-    prix_rev  = data.get("prix_revente", 0)
-    achat_max = data.get("achat_max", 0)
-    marge     = prix_rev - prix_achat
-    marge_pct = round(marge / prix_achat * 100) if prix_achat > 0 else 0
-    ok        = prix_achat <= achat_max or achat_max == 0
+def _palier_pour_achat(prix_achat: float):
+    """Retourne (mult, label, prix_revente_min) pour un prix d'achat donné."""
+    for (amin, amax, mult, label) in PALIERS:
+        if amin <= prix_achat < amax:
+            return mult, label, round(prix_achat * mult, 2)
+    return 1.4, "x1.4", round(prix_achat * 1.4, 2)
 
-    if ok:
-        status = f"BON ACHAT — sous le seuil de {achat_max} euros"
-    else:
+
+def formater_rentabilite(data: dict, prix_achat: float, quantite: int = 1, prix_total: float = None) -> str:
+    prix_rev   = data.get("prix_revente", 0)
+    achat_max  = data.get("achat_max", 0)
+    mult, label, revente_min = _palier_pour_achat(prix_achat)
+    marge_u    = round(prix_rev - prix_achat, 2)
+    marge_pct  = round(marge_u / prix_achat * 100) if prix_achat > 0 else 0
+    marge_tot  = round(marge_u * quantite, 2)
+    ok_seuil   = (achat_max == 0) or (prix_achat <= achat_max)
+    ok_coeff   = prix_rev >= revente_min
+
+    if ok_seuil and ok_coeff:
+        statut = "✅ BON ACHAT"
+        detail = f"Seuil respecte ({label} = {revente_min}€ min)"
+    elif not ok_seuil:
         dep = round((prix_achat - achat_max) / achat_max * 100) if achat_max > 0 else 0
-        status = f"AU-DESSUS du seuil ({dep}% de plus que {achat_max} euros conseilles)"
+        statut = "⚠️ AU-DESSUS DU SEUIL"
+        detail = f"Achat max conseille : {achat_max}€/u (+{dep}% de trop)"
+    else:
+        manque = round(revente_min - prix_rev, 2)
+        statut = "⚠️ MARGE INSUFFISANTE"
+        detail = f"Revente min ({label}) : {revente_min}€ — manque {manque}€"
 
-    return (
-        f"ANALYSE RENTABILITE\n"
-        f"Prix d'achat       : {prix_achat} euros\n"
-        f"Prix revente cible : {prix_rev} euros\n"
-        f"Marge brute        : +{marge} euros (+{marge_pct}%)\n"
-        f"{status}\n"
-    )
+    lines = [
+        f"📊 RENTABILITE",
+        f"━━━━━━━━━━━━━━━━━━━━",
+        f"💶 Prix achat      : {prix_achat}€/u",
+    ]
+    if quantite > 1 and prix_total:
+        lines.append(f"   Quantite        : {quantite} × {prix_achat}€ = {prix_total}€")
+    lines += [
+        f"💡 Revente estimee : {prix_rev}€/u",
+        f"📈 Marge/unite     : +{marge_u}€ (+{marge_pct}%)",
+    ]
+    if quantite > 1:
+        lines.append(f"📈 Marge totale    : +{marge_tot}€")
+    lines += [
+        f"",
+        f"🔢 Coeff applique  : {label} (achat {prix_achat}€)",
+        f"   Revente min     : {revente_min}€",
+        f"",
+        f"{statut}",
+        f"{detail}",
+        f"━━━━━━━━━━━━━━━━━━━━",
+    ]
+    return "\n".join(lines)
 
 
 def formater_annonce(data: dict) -> str:
