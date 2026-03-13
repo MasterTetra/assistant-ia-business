@@ -811,7 +811,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 await thinking.edit_text(recap)
             else:
-                await thinking.edit_text("⚠️ Erreur Airtable — vérifiez la base.")
+                # Tenter une insertion de diagnostic pour voir le vrai message Airtable
+                import httpx as _httpx
+                from config.settings import AIRTABLE_API_KEY, AIRTABLE_BASE_ID, TABLE_PRODUITS
+                _url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{TABLE_PRODUITS}"
+                _h = {"Authorization": f"Bearer {AIRTABLE_API_KEY}", "Content-Type": "application/json"}
+                _test = {"fields": {"Référence": "TEST-DIAG", "Description": "test"}}
+                try:
+                    async with _httpx.AsyncClient(timeout=10) as _http:
+                        _r = await _http.post(_url, headers=_h, json=_test)
+                    await thinking.edit_text(
+                        f"⚠️ Erreur Airtable\n"
+                        f"Code : {_r.status_code}\n"
+                        f"Détail : {_r.text[:300]}"
+                    )
+                except Exception as _e:
+                    await thinking.edit_text(f"⚠️ Erreur Airtable — {str(_e)[:200]}")
         except Exception as e:
             logger.error(f"archiver error: {e}", exc_info=True)
             await thinking.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
