@@ -192,7 +192,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text(
             f"📸 Photo {len(session['photos_buffer'])} ajoutée ✅"
             + (f"\n📝 {caption}" if caption else "")
-            + "\nEnvoie d'autres photos ou tape /terminer\_photos",
+            + "\nEnvoie d'autres photos ou tape /terminer_photos",
             parse_mode="Markdown"
         )
         return
@@ -1846,8 +1846,8 @@ def main():
             await application.initialize()
             await application.start()
             # Attendre que Telegram expire l'ancienne session (évite 409 Conflict)
-            logger.info("⏳ Attente 8s avant polling (anti-409)...")
-            await asyncio.sleep(8)
+            logger.info("⏳ Attente 15s avant polling (anti-409)...")
+            await asyncio.sleep(15)
             await application.updater.start_polling(
                 allowed_updates=Update.ALL_TYPES,
                 drop_pending_updates=True
