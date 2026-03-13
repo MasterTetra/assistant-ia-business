@@ -43,6 +43,19 @@ CATEGORIES_DEFAUT = {
 FRAIS_EBAY_PCT = 0.13  # 13%
 
 
+def echapper_xml(texte: str) -> str:
+    """Échappe les caractères spéciaux pour le XML eBay."""
+    if not texte:
+        return ""
+    return (texte
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&apos;")
+    )
+
+
 def convertir_liens_drive(photos_raw: str) -> list:
     """
     Convertit les liens Google Drive partagés en URLs directes compatibles eBay.
@@ -198,9 +211,10 @@ async def publier_sur_ebay(
     desc_html = f"<![CDATA[{description}]]>"
 
     # Durée de l'annonce (GTC = Good Till Cancelled)
+    titre_safe = echapper_xml(titre[:80])
     xml_body = f"""
   <Item>
-    <Title>{titre[:80]}</Title>
+    <Title>{titre_safe}</Title>
     <Description>{desc_html}</Description>
     <PrimaryCategory><CategoryID>{categorie}</CategoryID></PrimaryCategory>
     <StartPrice>{prix:.2f}</StartPrice>
