@@ -219,7 +219,7 @@ async def publier_sur_ebay(
     <Title>{titre_safe}</Title>
     <Description>{desc_safe}</Description>
     <PrimaryCategory><CategoryID>{categorie}</CategoryID></PrimaryCategory>
-    <StartPrice>{prix:.2f}</StartPrice>
+    <StartPrice currencyID="EUR">{prix:.2f}</StartPrice>
     <ConditionID>{condition_id}</ConditionID>
     <Country>FR</Country>
     <Currency>EUR</Currency>
@@ -243,13 +243,13 @@ async def publier_sur_ebay(
       </ShippingServiceOptions>
     </ShippingDetails>
     <ShipToLocations>FR</ShipToLocations>
-    <Site>France</Site>
+    <Site>71</Site>
     {photos_xml}
   </Item>
 """
 
     try:
-        logger.info(f"📤 XML envoyé à eBay (ShippingDetails extrait):\n{xml_body[xml_body.find('<ShippingDetails'):xml_body.find('</ShippingDetails>')+20] if '<ShippingDetails' in xml_body else 'NON TROUVÉ'}")
+        logger.info(f"📤 XML COMPLET envoyé à eBay:\n{xml_body}")
         resp_xml = await _ebay_call_async("AddFixedPriceItem", xml_body)
         logger.info(f"eBay AddFixedPriceItem réponse: {resp_xml[:500]}")
         root = _parse_xml(resp_xml)
