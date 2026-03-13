@@ -1,5 +1,6 @@
 """
 MODULE EBAY PUBLISH
+# VERSION 24 — Fix ShippingDetails, description parsing, Site supprimé
 Publication d'annonces sur eBay via API Trading XML.
 Gère les lots (1 annonce multi-stock) et la mise à jour des quantités.
 """
