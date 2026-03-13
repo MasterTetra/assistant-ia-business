@@ -345,8 +345,8 @@ async def get_product_by_ref(ref: str) -> dict:
         return None
 
 
-async def update_annonce(ref: str, annonce: str, etat: str = "") -> bool:
-    """Met à jour l'annonce générée et le statut dans Airtable."""
+async def update_annonce(ref: str, annonce: str, etat: str = "", prix_vente: float = None) -> bool:
+    """Met à jour l'annonce générée, le statut, l'état et le prix dans Airtable."""
     try:
         async with httpx.AsyncClient(timeout=20) as http:
             resp = await http.get(
@@ -367,13 +367,18 @@ async def update_annonce(ref: str, annonce: str, etat: str = "") -> bool:
         }
         if etat:
             fields["Notes"] = f"État : {etat}"
+        if prix_vente is not None and prix_vente > 0:
+            fields["Prix vente"] = round(float(prix_vente), 2)
         async with httpx.AsyncClient(timeout=20) as http:
             resp = await http.patch(
                 f"{AIRTABLE_URL}/{TABLE_PRODUITS}/{record_id}",
                 headers=HEADERS,
                 json={"fields": fields}
             )
-        return resp.status_code == 200
+        ok = resp.status_code == 200
+        if not ok:
+            logger.error(f"update_annonce {ref}: {resp.status_code} | {resp.text[:200]}")
+        return ok
     except Exception as e:
         logger.error(f"update_annonce error: {e}")
         return False
@@ -484,3 +489,87 @@ async def marquer_articles_vendus(refs: list, prix_vente: float, plateforme: str
     except Exception as e:
         logger.error(f"marquer_articles_vendus error: {e}")
         return False
+
+
+async def get_articles_prets_a_poster() -> list:
+    """
+    Retourne tous les articles avec statut 'acheté' ET Photos URLs renseignées.
+    Ces articles ont toutes les infos nécessaires pour être postés.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=20) as http:
+            resp = await http.get(
+                f"{AIRTABLE_URL}/{TABLE_PRODUITS}",
+                headers=HEADERS,
+                params={
+                    "filterByFormula": "AND({Statut}='acheté', {Photos URLs}!='')",
+                    "fields[]": [
+                        "Référence gestion", "Description", "Annonce générée",
+                        "Prix vente", "Prix achat unitaire", "Photos URLs",
+                        "Nombre de photos", "eBay Item ID"
+                    ],
+                    "maxRecords": 200,
+                    "sort[0][field]": "Référence gestion",
+                    "sort[0][direction]": "asc"
+                }
+            )
+        records = resp.json().get("records", [])
+        return [
+            {
+                "ref":           r["fields"].get("Référence gestion", "?"),
+                "description":   r["fields"].get("Description", ""),
+                "annonce":       r["fields"].get("Annonce générée", ""),
+                "prix_vente":    r["fields"].get("Prix vente", 0),
+                "prix_achat":    r["fields"].get("Prix achat unitaire", 0),
+                "photos_urls":   r["fields"].get("Photos URLs", ""),
+                "ebay_item_id":  r["fields"].get("eBay Item ID", ""),
+                "record_id":     r["id"],
+            }
+            for r in records
+        ]
+    except Exception as e:
+        logger.error(f"get_articles_prets_a_poster error: {e}")
+        return []
+
+
+def grouper_en_lots(articles: list) -> list:
+    """
+    Regroupe les articles en lots selon titre + annonce similaires.
+    Retourne une liste de lots : [{"titre", "annonce", "prix", "photos", "refs", "quantite"}]
+    """
+    import re as _re
+
+    def cle_lot(art):
+        # Extraire le titre depuis l'annonce générée
+        titre_match = _re.search(r"TITRE:\s*(.+)", art.get("annonce", ""))
+        titre = titre_match.group(1).strip() if titre_match else art["description"][:40]
+        return titre.lower().strip()
+
+    lots = {}
+    for art in articles:
+        cle = cle_lot(art)
+        if cle not in lots:
+            lots[cle] = {
+                "titre":    cle_lot(art),  # sera réécrit ci-dessous avec casse correcte
+                "annonce":  art["annonce"],
+                "prix":     art["prix_vente"],
+                "photos":   art["photos_urls"],
+                "refs":     [],
+                "quantite": 0,
+            }
+            # Récupérer le titre avec la casse correcte
+            titre_match = __import__("re").search(r"TITRE:\s*(.+)", art.get("annonce", ""))
+            if titre_match:
+                lots[cle]["titre"] = titre_match.group(1).strip()
+            else:
+                lots[cle]["titre"] = art["description"][:60]
+        lots[cle]["refs"].append(art["ref"])
+        lots[cle]["quantite"] += 1
+        # Garder le prix le plus récent (tous devraient être identiques dans un lot)
+        if art["prix_vente"]:
+            lots[cle]["prix"] = art["prix_vente"]
+        # Garder les photos si pas encore défini
+        if not lots[cle]["photos"] and art["photos_urls"]:
+            lots[cle]["photos"] = art["photos_urls"]
+
+    return list(lots.values())
