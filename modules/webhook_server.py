@@ -90,17 +90,20 @@ async def mettre_a_jour_statut(record_id: str, statut: str, prix_reel: float = N
 
 # ─── TELEGRAM : notification ─────────────────────────────────────────────────
 
-async def notifier_telegram(message: str):
-    """Envoie une notification Telegram au propriétaire."""
-    if not OWNER_CHAT_ID:
-        logger.warning("OWNER_CHAT_ID non défini, notification ignorée")
+async def notifier_telegram(message: str, topic: str = None):
+    """Envoie une notification dans le supergroupe, dans le bon topic si précisé."""
+    from config.settings import SUPERGROUP_ID, TOPICS
+    chat_id = SUPERGROUP_ID if SUPERGROUP_ID else OWNER_CHAT_ID
+    if not chat_id:
+        logger.warning("Aucun chat_id disponible pour la notification")
         return
+    thread_id = TOPICS.get(topic) if topic else None
+    payload = {"chat_id": chat_id, "text": message}
+    if thread_id:
+        payload["message_thread_id"] = thread_id
     try:
         async with httpx.AsyncClient(timeout=10) as http:
-            await http.post(
-                f"{TELEGRAM_URL}/sendMessage",
-                json={"chat_id": OWNER_CHAT_ID, "text": message}
-            )
+            await http.post(f"{TELEGRAM_URL}/sendMessage", json=payload)
     except Exception as e:
         logger.error(f"notifier_telegram error: {e}")
 
@@ -145,33 +148,38 @@ async def handle_ebay_notification(payload: dict) -> str:
         order_id = transaction.get("orderId", "")
         buyer = transaction.get("buyer", {}).get("username", "acheteur")
 
-        articles = await trouver_article_en_ligne(description=item_title)
-        if articles:
-            rec = articles[0]
-            record_id = rec["id"]
-            prix_achat = float(rec.get("fields", {}).get("Prix achat unitaire", 0))
-            ref = rec.get("fields", {}).get("Référence gestion", "?")
+        from modules.ebay_publish import traiter_vente_ebay
+        quantite_vendue = int(data.get("quantitySold", 1))
+        result = await traiter_vente_ebay(item_title, quantite_vendue, prix_vente)
 
-            ok = await mettre_a_jour_statut(
-                record_id, "vendu",
-                prix_reel=prix_vente,
-                plateforme="eBay"
+        if result["ok"]:
+            refs_txt = ", ".join(result["refs_vendues"])
+            restant = result["restant"]
+            marge = result["marge"]
+            marge_pct = result["marge_pct"]
+            lot_txt = f" (lot x{quantite_vendue})" if quantite_vendue > 1 else ""
+            restant_txt = f"\n📦 Restant en stock : {restant}" if restant > 0 else "\n📦 Stock épuisé"
+            msg = (
+                f"🛒 VENTE EBAY{lot_txt}\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📦 {item_title[:50]}\n"
+                f"👤 Acheteur : {buyer}\n"
+                f"💶 Prix vente : {prix_vente}€\n"
+                f"📉 Frais eBay : -{result['frais']}€\n"
+                f"💰 Marge nette : +{marge}€ ({marge_pct}%)\n"
+                f"🔖 Refs : {refs_txt[:80]}\n"
+                f"{restant_txt}\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"Statut → vendu ✅"
             )
-
-            if ok:
-                marge = calculer_marge(prix_achat, prix_vente, "ebay")
-                msg = (
-                    f"🛒 VENTE EBAY DÉTECTÉE\n"
-                    f"Article : {item_title[:50]}\n"
-                    f"Référence : {ref}\n"
-                    f"Acheteur : {buyer}\n"
-                    f"Prix vente : {prix_vente}€\n"
-                    f"Frais eBay : -{marge['frais_plateforme']}€\n"
-                    f"Marge nette : +{marge['marge_nette']}€ ({marge['marge_pct']}%)\n"
-                    f"Order ID : {order_id}\n\n"
-                    f"Statut mis à jour → vendu ✅"
-                )
-                await notifier_telegram(msg)
+        else:
+            msg = (
+                f"⚠️ VENTE EBAY — traitement partiel\n"
+                f"Article : {item_title[:50]}\n"
+                f"Erreur : {result.get('error', '?')[:150]}\n"
+                f"Prix : {prix_vente}€ — Order : {order_id}"
+            )
+        await notifier_telegram(msg, topic="sales_notifications")
         return "ok"
 
     # Expédition confirmée
