@@ -361,6 +361,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session["vendre_data"] = None
         await query.edit_message_text("❌ Vente annulée.")
 
+    # ── LISTING : sélection depuis liste ─────────────────
+    if data.startswith("listing_select|"):
+        ref = data.split("|", 1)[1]
+        session["listing_queue"] = [ref]
+        session["listing_queue_index"] = 0
+        await _lancer_listing_article(query.message, session, ref)
+        return
+
+    elif data.startswith("listing_all|"):
+        refs_str = data.split("|", 1)[1]
+        refs = refs_str.split()
+        session["listing_queue"] = refs
+        session["listing_queue_index"] = 0
+        await _lancer_listing_article(query.message, session, refs[0])
+        return
+
     # ── LISTING : sélection état ──────────────────────────
     if data.startswith("etat|"):
         etat_choisi = data.split("|", 1)[1]
@@ -399,7 +415,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data_flux = session.get("listing_data", {})
         etat = session.get("listing_etat", "Bon etat")
         titre = data_flux.get("titre") or data_flux.get("objet", ref)
-        # Sauvegarder annonce dans Airtable
         thinking = await query.message.reply_text("💾 Sauvegarde annonce...")
         try:
             from modules.stock import update_annonce
@@ -411,14 +426,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ok = await update_annonce(ref, annonce_txt, etat)
             if ok:
                 await thinking.edit_text(
-                    f"✅ ANNONCE VALIDEE\n"
+                    f"✅ ANNONCE VALIDÉE — {ref}\n"
                     f"━━━━━━━━━━━━━━━━━━━━\n"
-                    f"🔖 {ref}\n"
-                    f"📝 Titre : {titre}\n"
-                    f"🏷 Etat : {etat}\n"
-                    f"━━━━━━━━━━━━━━━━━━━━\n"
-                    f"Prêt à poster sur les plateformes !"
+                    f"📝 {titre}\n"
+                    f"🏷 État : {etat}\n"
+                    f"📍 Statut → en ligne\n"
+                    f"━━━━━━━━━━━━━━━━━━━━"
                 )
+                # ── Passer au suivant dans la queue ──
+                queue = session.get("listing_queue", [])
+                idx = session.get("listing_queue_index", 0) + 1
+                session["listing_queue_index"] = idx
+                if idx < len(queue):
+                    next_ref = queue[idx]
+                    await query.message.reply_text(f"➡️ Article suivant : {next_ref}")
+                    await _lancer_listing_article(query.message, session, next_ref)
+                elif len(queue) > 1:
+                    await query.message.reply_text(
+                        f"🎉 Tous les articles listés ! ({len(queue)}/{len(queue)})"
+                    )
             else:
                 await thinking.edit_text("⚠️ Erreur sauvegarde Airtable.")
         except Exception as e:
@@ -653,18 +679,74 @@ async def cmd_annonce(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await cmd_listing(update, context)
 
 async def cmd_listing(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Nouveau flux listing : /listing REF — pose les questions état avant de générer."""
-    if not context.args:
-        await update.message.reply_text(
-            "Usage : /listing REF\nEx: /listing AV-20260312-0001"
-        )
-        return
-    ref = context.args[0].upper()
+    """
+    /listing          → liste tous les articles avec statut 'acheté'
+    /listing REF      → génère l'annonce pour cette référence
+    /listing REF1 REF2 REF3 → génère annonces pour plusieurs références
+    """
     session = get_session(update.effective_user.id)
+
+    # ── Sans argument : afficher la liste des articles achetés ──
+    if not context.args:
+        thinking = await update.message.reply_text("📋 Chargement des articles à lister...")
+        try:
+            from modules.stock import get_produits_achetes
+            produits = await get_produits_achetes()
+            if not produits:
+                await thinking.edit_text(
+                    "✅ Aucun article en attente de listing.\n"
+                    "Tous les achats ont déjà une annonce."
+                )
+                return
+
+            lines = ["📋 ARTICLES À LISTER\n━━━━━━━━━━━━━━━━━━━━"]
+            for p in produits:
+                lines.append(
+                    f"🔖 {p['ref']}\n"
+                    f"   {p['description'][:40]}\n"
+                    f"   Achat: {p['prix_achat']}€ → Revente: {p['prix_vente']}€"
+                )
+            lines.append("━━━━━━━━━━━━━━━━━━━━")
+            lines.append("Tape /listing REF pour une annonce")
+            lines.append("Tape /listing REF1 REF2 REF3 pour plusieurs")
+
+            # Boutons pour sélection rapide (max 10)
+            from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
+            buttons = []
+            for p in produits[:10]:
+                buttons.append([IKB(
+                    f"{p['ref']} — {p['description'][:25]}",
+                    callback_data=f"listing_select|{p['ref']}"
+                )])
+            # Bouton "Tout lister"
+            if len(produits) > 1:
+                all_refs = " ".join(p["ref"] for p in produits[:10])
+                buttons.append([IKB(f"📦 Tout lister ({len(produits)} articles)", callback_data=f"listing_all|{all_refs}")])
+
+            await thinking.edit_text("\n".join(lines), reply_markup=IKM(buttons))
+        except Exception as e:
+            await thinking.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
+        return
+
+    # ── Avec argument(s) : générer les annonces ──
+    refs = [r.upper() for r in context.args]
+    session["listing_queue"] = refs
+    session["listing_queue_index"] = 0
+
+    # Lancer le premier article
+    await _lancer_listing_article(update.message, session, refs[0])
+
+
+async def _lancer_listing_article(msg, session, ref: str):
+    """Lance le flux de création d'annonce pour un article."""
     session["listing_ref"] = ref
     session["mode"] = "listing_attente_etat"
 
     from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
+    nb_total = len(session.get("listing_queue", [ref]))
+    idx = session.get("listing_queue_index", 0)
+    header = f"[{idx+1}/{nb_total}] " if nb_total > 1 else ""
+
     kb = IKM([
         [IKB("🆕 Neuf", callback_data="etat|Neuf")],
         [IKB("⭐ Très bon état", callback_data="etat|Tres bon etat")],
@@ -672,8 +754,8 @@ async def cmd_listing(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [IKB("🟡 Satisfaisant", callback_data="etat|Satisfaisant")],
         [IKB("🔧 Pour pièces", callback_data="etat|Pour pieces")],
     ])
-    await update.message.reply_text(
-        f"📦 Génération annonce — {ref}\n\nQuel est l'état de l'objet ?",
+    await msg.reply_text(
+        f"📦 {header}Génération annonce — {ref}\n\nQuel est l'état de l'objet ?",
         reply_markup=kb
     )
 
