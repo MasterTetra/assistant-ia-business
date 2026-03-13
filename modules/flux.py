@@ -212,6 +212,29 @@ async def analyser_marche(photo_url: str, caption: str) -> dict:
 
     achat_max, mult, label = _calcul_palier(prix_rev) if prix_rev > 0 else (0, 3.0, "x3")
 
+    # ── SCORE OPPORTUNITE /10 ─────────────────────────────
+    score = 5.0
+    # Demande
+    if demande.upper() == "FORTE":   score += 2.0
+    elif demande.upper() == "MOYENNE": score += 1.0
+    # Vitesse de vente
+    if vitesse.upper() == "RAPIDE":  score += 1.5
+    elif vitesse.upper() == "NORMALE": score += 0.5
+    # Marge potentielle
+    marge_potentielle = prix_rev - achat_max
+    if marge_potentielle >= achat_max:  score += 1.5  # marge > 100%
+    elif marge_potentielle >= achat_max * 0.5: score += 0.5
+    # Envoi
+    if envoi.upper() == "FACILE":    score += 0.5
+    elif envoi.upper() == "DIFFICILE": score -= 1.0
+    # Nombre d'annonces (liquidite)
+    try:
+        nb_int = int(str(nb).replace("+", "").strip())
+        if nb_int >= 20: score += 0.5
+        elif nb_int <= 3: score -= 0.5
+    except: pass
+    score = round(max(1.0, min(10.0, score)), 1)
+
     return {
         "objet": objet_id,
         "caption": caption,
@@ -232,6 +255,7 @@ async def analyser_marche(photo_url: str, caption: str) -> dict:
         "encombrement": encombr,
         "envoi": envoi,
         "raison": raison,
+        "score": score,
     }
 
 
@@ -264,34 +288,47 @@ async def generer_annonce(data: dict, etat: str = "") -> dict:
     return data
 
 
-def formater_analyse(data: dict) -> str:
-    em_d   = {"FORTE": "FORTE", "MOYENNE": "MOYENNE", "FAIBLE": "FAIBLE"}
-    em_v   = {"RAPIDE": "RAPIDE", "NORMALE": "NORMALE", "LENTE": "LENTE"}
-    em_e   = {"PETIT": "PETIT", "MOYEN": "MOYEN", "GRAND": "GRAND"}
-    em_env = {"FACILE": "FACILE", "MOYEN": "MOYEN", "DIFFICILE": "DIFFICILE"}
+def _score_emoji(score: float) -> str:
+    if score >= 8.5: return "🔥"
+    if score >= 7.0: return "✅"
+    if score >= 5.0: return "🟡"
+    return "🔴"
 
+def _score_bar(score: float) -> str:
+    filled = round(score)
+    return "█" * filled + "░" * (10 - filled)
+
+
+def formater_analyse(data: dict) -> str:
+    score = data.get("score", 5.0)
+    emoji = _score_emoji(score)
+    bar = _score_bar(score)
     annonces = data["annonces"].replace("[V]", "✅").replace("[.]", "🔵")
 
+    demande_icon = {"FORTE": "🔥", "MOYENNE": "📊", "FAIBLE": "📉"}.get(data["demande"].upper(), "📊")
+    vitesse_icon = {"RAPIDE": "⚡", "NORMALE": "🕐", "LENTE": "🐢"}.get(data["vitesse"].upper(), "🕐")
+    envoi_icon   = {"FACILE": "📦", "MOYEN": "🚚", "DIFFICILE": "⚠️"}.get(data["envoi"].upper(), "🚚")
+
     return (
-        f"OBJET IDENTIFIE\n{data['objet']}\n\n"
-        f"ANNONCES ({data['nb_annonces']} references)\n"
-        f"{annonces}\n\n"
-        f"PRIX DU MARCHE\n"
-        f"Bas    : {data['prix_bas']} euros\n"
-        f"Moyen  : {data['prix_moyen']} euros\n"
-        f"Haut   : {data['prix_haut']} euros\n\n"
-        f"LOGISTIQUE\n"
-        f"Poids       : {data['poids']}\n"
-        f"Dimensions  : {data['dimensions']}\n"
-        f"Encombrement: {em_e.get(data['encombrement'].upper(), data['encombrement'])}\n"
-        f"Envoi       : {em_env.get(data['envoi'].upper(), data['envoi'])}\n\n"
-        f"MARCHE\n"
-        f"Demande : {em_d.get(data['demande'].upper(), data['demande'])}\n"
-        f"Vitesse : {em_v.get(data['vitesse'].upper(), data['vitesse'])}\n"
-        + (f"{data['raison']}\n" if data["raison"] else "") +
-        f"\nESTIMATION\n"
-        f"Prix de revente conseille : {data['prix_revente']} euros\n"
-        f"Prix d'achat maximum      : {data['achat_max']} euros ({data['label']})\n"
+        f"📦 {data['objet'].upper()}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{emoji} SCORE OPPORTUNITE : {score}/10\n"
+        f"{bar}\n\n"
+        f"💶 PRIX DU MARCHE\n"
+        f"  Bas    : {data['prix_bas']}€\n"
+        f"  Moyen  : {data['prix_moyen']}€\n"
+        f"  Haut   : {data['prix_haut']}€\n\n"
+        f"📊 MARCHE ({data['nb_annonces']} annonces)\n"
+        f"  {demande_icon} Demande : {data['demande']}\n"
+        f"  {vitesse_icon} Vitesse : {data['vitesse']}\n"
+        + (f"  {data['raison']}\n" if data.get("raison") else "") +
+        f"\n🚚 LOGISTIQUE\n"
+        f"  {envoi_icon} Envoi : {data['envoi']}\n"
+        f"  Poids : {data['poids']}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"💡 Prix revente conseille : {data['prix_revente']}€\n"
+        f"🛒 Prix achat maximum     : {data['achat_max']}€ ({data['label']})\n"
+        f"━━━━━━━━━━━━━━━━━━━━"
     )
 
 
@@ -367,26 +404,18 @@ async def generer_ref() -> str:
 async def archiver(data: dict, ref: str, prix_achat_total: float, source: str,
                    quantite: int = 1) -> list:
     """
-    Crée UNE ligne par unité dans Airtable.
-    - Si quantite=1 : 1 ligne, prix_achat_total = prix unitaire
-    - Si quantite=N : N lignes, chacune avec prix_unitaire = total/N
-    Retourne la liste des références créées.
+    Nouvelle architecture : crée UNE ligne par unité dans Airtable SANS annonce.
+    L'annonce sera générée séparément via /listing dans Post&Sell.
+    Notifie General (Inventory) à la création.
     """
     try:
         prix_unitaire = round(prix_achat_total / quantite, 4) if quantite > 0 else prix_achat_total
-        titre = data.get("titre") or data.get("titre_ebay") or data.get("objet", "")
-        annonce = (
-            f"TITRE: {titre}\n\n"
-            f"{data.get('description', '')}\n\n"
-            f"MOTS-CLES: {data.get('mots_cles', '')}"
-        )
         description_objet = data.get("caption") or data.get("objet", "")
+        objet_nom = data.get("objet", description_objet)
         date_achat = datetime.now().strftime("%Y-%m-%d")
         source_val = source or "Non renseigne"
-        prix_vente = round(float(data["prix_revente"]), 2)
-        notes = data.get("conseil", "")
+        prix_vente_estime = round(float(data.get("prix_revente", 0)), 2)
 
-        # Récupérer le prochain numéro global une seule fois
         num_debut = await get_next_numero_global()
         date_str = datetime.now().strftime("%Y%m%d")
 
@@ -398,15 +427,12 @@ async def archiver(data: dict, ref: str, prix_achat_total: float, source: str,
                     "Référence": ref_i,
                     "Référence gestion": ref_i,
                     "Description": description_objet,
-                    # Prix achat total uniquement sur la 1ère ligne du lot
                     "Prix achat total": round(float(prix_achat_total), 2) if i == 0 else 0,
                     "Prix achat unitaire": round(float(prix_unitaire), 4),
-                    "Prix vente": prix_vente,
+                    "Prix vente": prix_vente_estime,
                     "Source": source_val,
-                    "Statut": "en ligne",
-                    "Annonce générée": annonce,
+                    "Statut": "en stockage",
                     "Date achat": date_achat,
-                    "Notes": notes,
                     "Quantite totale": 1,
                     "Quantite vendue": 0,
                 }
@@ -419,22 +445,31 @@ async def archiver(data: dict, ref: str, prix_achat_total: float, source: str,
                     logger.error(f"Airtable error ligne {i+1}: {resp.status_code} {resp.text[:300]}")
                 else:
                     refs_creees.append(ref_i)
+                    logger.info(f"✅ Airtable créé : {ref_i}")
 
-        # Notifier Post&Sell du nouveau produit à lister
+        # Notifier General (Inventory) — fiche produit créée
         if refs_creees:
             try:
-                from modules.routing import notify_new_product
-                titre = data.get("titre_ebay") or data.get("objet", "Article")
-                prix_vente = data.get("prix_moyen", 0)
-                await notify_new_product(
-                    ref=refs_creees[0],
-                    titre=titre,
-                    prix_achat=round(prix_achat_total / quantite, 2) if quantite else prix_achat_total,
-                    quantite=quantite,
-                    prix_vente_estime=prix_vente
+                from modules.routing import send_to_topic
+                prix_u = round(prix_achat_total / quantite, 2) if quantite else prix_achat_total
+                score = data.get("score", "?")
+                msg = (
+                    f"📦 NOUVEAU STOCK\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🏷 {objet_nom}\n"
+                    f"🔖 Ref : {refs_creees[0]}"
+                    + (f" → {refs_creees[-1]}" if len(refs_creees) > 1 else "") +
+                    f"\n💶 Achat : {prix_u}€/u × {quantite}"
+                    + (f" = {prix_achat_total}€ total" if quantite > 1 else "") +
+                    f"\n💡 Revente estimée : {prix_vente_estime}€\n"
+                    f"📊 Score : {score}/10\n"
+                    f"📍 Statut : En stockage\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"➡️ /listing {refs_creees[0]} dans Post&Sell pour générer l'annonce"
                 )
-            except Exception as re:
-                logger.warning(f"notify_new_product skipped: {re}")
+                await send_to_topic("general", msg)
+            except Exception as e:
+                logger.warning(f"notify inventory skipped: {e}")
 
         return refs_creees
     except Exception as e:
