@@ -234,21 +234,12 @@ async def publier_sur_ebay(
       <ShippingCostPaidByOption>Buyer</ShippingCostPaidByOption>
     </ReturnPolicy>
     <ShippingDetails>
-      <ShippingDiscountProfileID/>
       <ShippingType>Flat</ShippingType>
       <ShippingServiceOptions>
         <ShippingServicePriority>1</ShippingServicePriority>
-        <ShippingService>FR_Chronopost</ShippingService>
-        <ShippingServiceCost currencyID="EUR">0.00</ShippingServiceCost>
-        <FreeShipping>true</FreeShipping>
-        <ShippingServiceAdditionalCost currencyID="EUR">0.00</ShippingServiceAdditionalCost>
-      </ShippingServiceOptions>
-      <ShippingServiceOptions>
-        <ShippingServicePriority>2</ShippingServicePriority>
         <ShippingService>FR_LaPosteColissimo</ShippingService>
         <ShippingServiceCost currencyID="EUR">0.00</ShippingServiceCost>
         <FreeShipping>true</FreeShipping>
-        <ShippingServiceAdditionalCost currencyID="EUR">0.00</ShippingServiceAdditionalCost>
       </ShippingServiceOptions>
     </ShippingDetails>
     <ShipToLocations>FR</ShipToLocations>
@@ -258,6 +249,7 @@ async def publier_sur_ebay(
 """
 
     try:
+        logger.info(f"📤 XML envoyé à eBay (ShippingDetails extrait):\n{xml_body[xml_body.find('<ShippingDetails'):xml_body.find('</ShippingDetails>')+20] if '<ShippingDetails' in xml_body else 'NON TROUVÉ'}")
         resp_xml = await _ebay_call_async("AddFixedPriceItem", xml_body)
         logger.info(f"eBay AddFixedPriceItem réponse: {resp_xml[:500]}")
         root = _parse_xml(resp_xml)
