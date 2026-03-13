@@ -492,7 +492,7 @@ async def archiver(data: dict, ref: str, prix_achat_total: float, source: str,
                     "Description": description_objet,
                     "Prix achat unitaire": round(float(prix_unitaire), 2),
                     "Prix vente": float(prix_vente_estime),
-                    "Statut": "en stockage",
+                    "Statut": "acheté",
                     "Date achat": date_achat,
                     "Quantite totale": 1,
                 }
@@ -531,7 +531,7 @@ async def archiver(data: dict, ref: str, prix_achat_total: float, source: str,
                     + (f" = {prix_achat_total}€ total" if quantite > 1 else "") +
                     f"\n💡 Revente estimée : {prix_vente_estime}€\n"
                     f"📊 Score : {score}/10\n"
-                    f"📍 Statut : En stockage\n"
+                    f"📍 Statut : Acheté\n"
                     f"━━━━━━━━━━━━━━━━━━━━\n"
                     f"➡️ /listing {refs_creees[0]} dans Post&Sell pour générer l'annonce"
                 )
