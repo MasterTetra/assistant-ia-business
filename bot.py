@@ -415,40 +415,101 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data_flux = session.get("listing_data", {})
         etat = session.get("listing_etat", "Bon etat")
         titre = data_flux.get("titre") or data_flux.get("objet", ref)
-        thinking = await query.message.reply_text("💾 Sauvegarde annonce...")
+        description = data_flux.get("description", "")
+        mots_cles = data_flux.get("mots_cles", "")
+        prix_vente = float(data_flux.get("prix_vente") or data_flux.get("prix_revente") or 0)
+        poids = int(data_flux.get("poids") or 500)
+
+        thinking = await query.message.reply_text("💾 Sauvegarde + publication eBay en cours...")
         try:
-            from modules.stock import update_annonce
-            annonce_txt = (
-                f"TITRE: {titre}\n\n"
-                f"{data_flux.get('description', '')}\n\n"
-                f"MOTS-CLES: {data_flux.get('mots_cles', '')}"
-            )
+            from modules.stock import update_annonce, get_produits_en_ligne_similaires
+            from modules.ebay_publish import publier_sur_ebay, sauvegarder_ebay_item_id
+
+            annonce_txt = f"TITRE: {titre}\n\n{description}\n\nMOTS-CLES: {mots_cles}"
             ok = await update_annonce(ref, annonce_txt, etat)
-            if ok:
+            if not ok:
+                await thinking.edit_text("⚠️ Erreur sauvegarde Airtable.")
+                return
+
+            # ── Détection lot : articles identiques en ligne ──
+            similaires = await get_produits_en_ligne_similaires(titre)
+            quantite_lot = len(similaires) if similaires else 1
+            ref_principale = similaires[0]["ref"] if similaires else ref
+
+            # ── Récupérer les photos depuis Airtable ──
+            photo_urls = []
+            if similaires:
+                photos_raw = similaires[0].get("photos_urls", "")
+                if photos_raw:
+                    photo_urls = [u.strip() for u in photos_raw.split(",") if u.strip()]
+
+            # ── Vérifier si une annonce eBay existe déjà pour ce lot ──
+            ebay_item_id_existant = similaires[0].get("ebay_item_id", "") if similaires else ""
+
+            if ebay_item_id_existant and quantite_lot > 1:
+                # Annonce déjà existante — juste incrémenter la quantité
+                from modules.ebay_publish import modifier_quantite_ebay
+                await modifier_quantite_ebay(ebay_item_id_existant, quantite_lot)
                 await thinking.edit_text(
                     f"✅ ANNONCE VALIDÉE — {ref}\n"
                     f"━━━━━━━━━━━━━━━━━━━━\n"
                     f"📝 {titre}\n"
                     f"🏷 État : {etat}\n"
+                    f"📦 Lot : {quantite_lot} unités sur eBay (quantité mise à jour)\n"
                     f"📍 Statut → en ligne\n"
                     f"━━━━━━━━━━━━━━━━━━━━"
                 )
-                # ── Passer au suivant dans la queue ──
-                queue = session.get("listing_queue", [])
-                idx = session.get("listing_queue_index", 0) + 1
-                session["listing_queue_index"] = idx
-                if idx < len(queue):
-                    next_ref = queue[idx]
-                    await query.message.reply_text(f"➡️ Article suivant : {next_ref}")
-                    await _lancer_listing_article(query.message, session, next_ref)
-                elif len(queue) > 1:
-                    await query.message.reply_text(
-                        f"🎉 Tous les articles listés ! ({len(queue)}/{len(queue)})"
-                    )
             else:
-                await thinking.edit_text("⚠️ Erreur sauvegarde Airtable.")
+                # Nouvelle annonce eBay
+                result = await publier_sur_ebay(
+                    titre=titre,
+                    description=f"{description}\n\n{mots_cles}",
+                    prix=prix_vente if prix_vente > 0 else 20.0,
+                    quantite=quantite_lot,
+                    etat=etat,
+                    photo_urls=photo_urls,
+                    poids_grammes=poids,
+                    ref_principale=ref_principale
+                )
+
+                if result["success"]:
+                    # Sauvegarder l'Item ID sur toutes les refs du lot
+                    for s in (similaires or [{"ref": ref}]):
+                        await sauvegarder_ebay_item_id(s["ref"], result["item_id"], result["url"])
+                    lot_txt = f"\n📦 Lot : {quantite_lot} unités" if quantite_lot > 1 else ""
+                    await thinking.edit_text(
+                        f"✅ ANNONCE VALIDÉE & PUBLIÉE SUR EBAY\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📝 {titre}\n"
+                        f"🏷 État : {etat}\n"
+                        f"💶 Prix : {prix_vente:.2f}€{lot_txt}\n"
+                        f"🔗 {result['url']}\n"
+                        f"📍 Statut → en ligne\n"
+                        f"━━━━━━━━━━━━━━━━━━━━"
+                    )
+                else:
+                    # Publication eBay échouée — statut sauvegardé quand même
+                    await thinking.edit_text(
+                        f"✅ Annonce sauvegardée — {ref}\n"
+                        f"⚠️ Publication eBay échouée :\n"
+                        f"{result['error'][:200]}\n\n"
+                        f"Vérifie le token eBay dans Railway."
+                    )
+
+            # ── Passer au suivant dans la queue ──
+            queue = session.get("listing_queue", [])
+            idx = session.get("listing_queue_index", 0) + 1
+            session["listing_queue_index"] = idx
+            if idx < len(queue):
+                next_ref = queue[idx]
+                await query.message.reply_text(f"➡️ Article suivant : {next_ref}")
+                await _lancer_listing_article(query.message, session, next_ref)
+            elif len(queue) > 1:
+                await query.message.reply_text(f"🎉 Tous les articles listés ! ({len(queue)}/{len(queue)})")
+
         except Exception as e:
-            await thinking.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
+            logger.error(f"listing_valider error: {e}", exc_info=True)
+            await thinking.edit_text(f"⚠️ Erreur : {str(e)[:300]}")
         return
 
     elif data.startswith("listing_mod_prix|"):
