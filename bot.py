@@ -361,6 +361,98 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session["vendre_data"] = None
         await query.edit_message_text("❌ Vente annulée.")
 
+    # ── POST : publication depuis /post ──────────────────
+    if data == "post_cancel":
+        session.pop("post_lots", None)
+        await query.edit_message_text("❌ Publication annulée.")
+        return
+
+    elif data == "post_all":
+        lots = session.get("post_lots", [])
+        if not lots:
+            await query.edit_message_text("⚠️ Plus rien à publier.")
+            return
+        await query.edit_message_text(f"🚀 Publication de {len(lots)} annonce(s) en cours...")
+        resultats = []
+        for lot in lots:
+            res = await _publier_lot(lot, context.application)
+            resultats.append((lot["titre"][:35], lot["quantite"], res))
+        # Résumé
+        lignes = ["📊 RÉSUMÉ PUBLICATION\n━━━━━━━━━━━━━━━━━━━━"]
+        ok_count = 0
+        for titre, qte, res in resultats:
+            if res["success"]:
+                ok_count += 1
+                lignes.append(f"✅ {titre}{'× '+str(qte) if qte > 1 else ''}\n   {res['url']}")
+            else:
+                lignes.append(f"❌ {titre}\n   {res['error'][:80]}")
+        lignes.append(f"\n━━━━━━━━━━━━━━━━━━━━\n{ok_count}/{len(lots)} publiées")
+        await query.message.reply_text("\n".join(lignes))
+        return
+
+    elif data.startswith("post_step|"):
+        idx = int(data.split("|")[1])
+        lots = session.get("post_lots", [])
+        if idx >= len(lots):
+            await query.edit_message_text("✅ Tous les lots ont été traités.")
+            return
+        lot = lots[idx]
+        qte_txt = f" (lot × {lot['quantite']})" if lot['quantite'] > 1 else ""
+        photos_count = len([u for u in lot['photos'].split(',') if u.strip()])
+        from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
+        buttons = [
+            [IKB(f"✅ Publier{qte_txt}", callback_data=f"post_confirm|{idx}")],
+            [IKB("💶 Modifier prix", callback_data=f"post_edit_prix|{idx}")],
+            [IKB("⏭ Passer", callback_data=f"post_step|{idx+1}")],
+            [IKB("❌ Arrêter", callback_data="post_cancel")],
+        ]
+        await query.edit_message_text(
+            f"[{idx+1}/{len(lots)}] {lot['titre']}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"💶 Prix : {lot['prix']:.2f}€  📸 {photos_count} photo(s){qte_txt}\n"
+            f"Refs : {', '.join(lot['refs'][:5])}",
+            reply_markup=IKM(buttons)
+        )
+        return
+
+    elif data.startswith("post_confirm|"):
+        idx = int(data.split("|")[1])
+        lots = session.get("post_lots", [])
+        lot = lots[idx]
+        await query.edit_message_text(f"⏳ Publication : {lot['titre'][:40]}...")
+        res = await _publier_lot(lot, context.application)
+        if res["success"]:
+            await query.message.reply_text(f"✅ {lot['titre'][:40]}\n🔗 {res['url']}")
+        else:
+            await query.message.reply_text(f"❌ {lot['titre'][:40]}\n{res['error'][:150]}")
+        # Passer au suivant auto
+        next_idx = idx + 1
+        if next_idx < len(lots):
+            from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
+            next_lot = lots[next_idx]
+            buttons = [
+                [IKB(f"✅ Publier", callback_data=f"post_confirm|{next_idx}")],
+                [IKB("💶 Modifier prix", callback_data=f"post_edit_prix|{next_idx}")],
+                [IKB("⏭ Passer", callback_data=f"post_step|{next_idx+1}")],
+            ]
+            await query.message.reply_text(
+                f"[{next_idx+1}/{len(lots)}] {next_lot['titre']}\n"
+                f"💶 {next_lot['prix']:.2f}€  Refs: {', '.join(next_lot['refs'][:3])}",
+                reply_markup=IKM(buttons)
+            )
+        else:
+            await query.message.reply_text("🎉 Tous les lots publiés !")
+        return
+
+    elif data.startswith("post_edit_prix|"):
+        idx = int(data.split("|")[1])
+        session["post_edit_idx"] = idx
+        session["mode"] = "post_attente_prix"
+        await query.edit_message_text(
+            f"💶 Nouveau prix pour lot [{idx+1}] ?\nEx: 12.50"
+        )
+        return
+
     # ── LISTING : sélection depuis liste ─────────────────
     if data.startswith("listing_select|"):
         ref = data.split("|", 1)[1]
@@ -426,7 +518,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             from modules.ebay_publish import publier_sur_ebay, sauvegarder_ebay_item_id
 
             annonce_txt = f"TITRE: {titre}\n\n{description}\n\nMOTS-CLES: {mots_cles}"
-            ok = await update_annonce(ref, annonce_txt, etat)
+            ok = await update_annonce(ref, annonce_txt, etat, prix_vente=prix_vente)
             if not ok:
                 await thinking.edit_text("⚠️ Erreur sauvegarde Airtable.")
                 return
@@ -741,6 +833,89 @@ async def cmd_annonce(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Alias de /listing pour rétrocompat."""
     await cmd_listing(update, context)
 
+
+async def cmd_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /post — Analyse Airtable, regroupe les articles prêts (statut acheté + photos)
+    en lots, et publie sur eBay en demandant confirmation.
+    """
+    session = get_session(update.effective_user.id)
+    thinking = await update.message.reply_text("🔍 Analyse du stock en attente...")
+
+    from modules.stock import get_articles_prets_a_poster, grouper_en_lots
+    articles = await get_articles_prets_a_poster()
+
+    if not articles:
+        await thinking.edit_text(
+            "✅ Aucun article prêt à poster.\n"
+            "Vérifie que le statut est 'acheté' ET que les Photos URLs sont renseignées dans Airtable."
+        )
+        return
+
+    lots = grouper_en_lots(articles)
+    session["post_lots"] = lots
+    session["post_lots_confirmes"] = []
+
+    # Afficher le résumé des lots détectés
+    lines = [f"📦 {len(articles)} article(s) → {len(lots)} annonce(s) à publier\n━━━━━━━━━━━━━━━━━━━━"]
+    for i, lot in enumerate(lots):
+        qte_txt = f" × {lot['quantite']}" if lot['quantite'] > 1 else ""
+        prix_txt = f"{lot['prix']:.2f}€" if lot['prix'] else "Prix à définir"
+        photos_count = len([u for u in lot['photos'].split(',') if u.strip()])
+        lines.append(
+            f"\n{'[LOT]' if lot['quantite'] > 1 else '[1]'} {lot['titre'][:45]}{qte_txt}\n"
+            f"   💶 {prix_txt}  📸 {photos_count} photo(s)\n"
+            f"   Refs : {', '.join(lot['refs'][:3])}{'...' if len(lot['refs']) > 3 else ''}"
+        )
+    lines.append("\n━━━━━━━━━━━━━━━━━━━━")
+
+    from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
+    buttons = [
+        [IKB(f"🚀 Tout publier ({len(lots)} annonces)", callback_data="post_all")],
+        [IKB("⚙️ Vérifier lot par lot", callback_data="post_step|0")],
+        [IKB("❌ Annuler", callback_data="post_cancel")],
+    ]
+    await thinking.edit_text("\n".join(lines), reply_markup=IKM(buttons))
+
+
+async def _publier_lot(lot: dict, app) -> dict:
+    """Publie un lot sur eBay et met à jour Airtable pour toutes les refs du lot."""
+    from modules.ebay_publish import publier_sur_ebay, sauvegarder_ebay_item_id, convertir_liens_drive
+    from modules.stock import update_annonce
+    import re as _re
+
+    titre = lot["titre"]
+    annonce = lot["annonce"]
+    prix = float(lot["prix"]) if lot["prix"] else 20.0
+    quantite = lot["quantite"]
+    photo_urls = convertir_liens_drive(lot["photos"])
+
+    # Extraire description et mots-clés de l'annonce
+    desc_match = _re.search(r"TITRE:.+?\n\n(.+?)\n\nMOTS-CLES:", annonce, _re.DOTALL)
+    description = desc_match.group(1).strip() if desc_match else annonce
+    mots_match = _re.search(r"MOTS-CLES:\s*(.+)", annonce)
+    mots_cles = mots_match.group(1).strip() if mots_match else ""
+
+    # Extraire l'état depuis les Notes (si disponible)
+    etat = "Bon etat"
+
+    result = await publier_sur_ebay(
+        titre=titre,
+        description=f"{description}\n\n{mots_cles}",
+        prix=prix,
+        quantite=quantite,
+        etat=etat,
+        photo_urls=photo_urls,
+    )
+
+    if result["success"]:
+        # Mettre à jour toutes les refs du lot dans Airtable
+        for ref in lot["refs"]:
+            await update_annonce(ref, annonce, etat, prix_vente=prix)
+            await sauvegarder_ebay_item_id(ref, result["item_id"], result["url"])
+
+    return result
+
 async def cmd_listing(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /listing          → liste tous les articles avec statut 'acheté'
@@ -998,6 +1173,29 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"generer_annonce error: {e}", exc_info=True)
             await thinking.edit_text(f"⚠️ Erreur génération : {str(e)[:200]}")
+        return
+
+    elif session.get("mode") == "post_attente_prix":
+        try:
+            nouveau_prix = float(text.replace(",", ".").replace("€", "").strip())
+            idx = session.get("post_edit_idx", 0)
+            lots = session.get("post_lots", [])
+            if idx < len(lots):
+                lots[idx]["prix"] = nouveau_prix
+                session["post_lots"] = lots
+            session["mode"] = None
+            lot = lots[idx]
+            from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
+            buttons = [
+                [IKB(f"✅ Publier × {lot['quantite']}", callback_data=f"post_confirm|{idx}")],
+                [IKB("⏭ Passer", callback_data=f"post_step|{idx+1}")],
+            ]
+            await update.message.reply_text(
+                f"💶 Prix mis à jour : {nouveau_prix}€\n{lot['titre'][:40]}",
+                reply_markup=IKM(buttons)
+            )
+        except ValueError:
+            await update.message.reply_text("⚠️ Format invalide. Ex: 12.50")
         return
 
     elif session.get("mode") == "listing_attente_prix":
@@ -1604,6 +1802,7 @@ def main():
     app.add_handler(CommandHandler("chercher", cmd_chercher))
     app.add_handler(CommandHandler("annonce", cmd_annonce))
     app.add_handler(CommandHandler("listing", cmd_listing))
+    app.add_handler(CommandHandler("post", cmd_post))
     app.add_handler(CommandHandler("rapport", cmd_rapport))
     app.add_handler(CommandHandler("finances", cmd_finances))
     app.add_handler(CommandHandler("statut", cmd_statut))
