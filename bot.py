@@ -246,6 +246,25 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await thinking_msg.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
 
 
+async def _afficher_annonce_avec_boutons(msg, data_flux: dict, ref: str):
+    """Affiche l'annonce générée avec les boutons de modification."""
+    from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
+    from modules.flux import formater_annonce
+    annonce_txt = formater_annonce(data_flux)
+    keyboard = IKM([
+        [IKB("✅ Valider annonce", callback_data=f"listing_valider|{ref}")],
+        [IKB("💶 Modifier prix", callback_data=f"listing_mod_prix|{ref}"),
+         IKB("✏️ Modifier titre", callback_data=f"listing_mod_titre|{ref}")],
+        [IKB("📝 Modifier annonce", callback_data=f"listing_mod_annonce|{ref}")],
+        [IKB("❌ Annuler", callback_data=f"listing_annuler|{ref}")],
+    ])
+    if len(annonce_txt) > 3500:
+        await msg.reply_text(annonce_txt[:3500])
+        await msg.reply_text(annonce_txt[3500:], reply_markup=keyboard)
+    else:
+        await msg.reply_text(annonce_txt, reply_markup=keyboard)
+
+
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -341,6 +360,111 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session["mode"] = None
         session["vendre_data"] = None
         await query.edit_message_text("❌ Vente annulée.")
+
+    # ── LISTING : sélection état ──────────────────────────
+    if data.startswith("etat|"):
+        etat_choisi = data.split("|", 1)[1]
+        session["listing_etat"] = etat_choisi
+        if etat_choisi == "Neuf":
+            # Pas de détails nécessaires, on génère directement
+            session["listing_details"] = ""
+            session["mode"] = "listing_generation"
+            ref = session.get("listing_ref", "?")
+            thinking = await query.message.reply_text(f"📝 Génération annonce {ref}...")
+            try:
+                from modules.flux import generer_annonce, formater_annonce
+                from modules.stock import get_product_by_ref
+                prod = await get_product_by_ref(ref)
+                data_flux = prod if prod else {"objet": ref, "prix_revente": 0, "demande": "?", "prix_moyen": 0, "vitesse": "?"}
+                data_flux = await generer_annonce(data_flux, etat=etat_choisi, details="")
+                session["listing_data"] = data_flux
+                session["mode"] = "listing_validation"
+                await thinking.delete()
+                await _afficher_annonce_avec_boutons(query.message, data_flux, ref)
+            except Exception as e:
+                await thinking.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
+        else:
+            session["mode"] = "listing_attente_details"
+            await query.edit_message_text(
+                f"État sélectionné : {etat_choisi}\n\n"
+                f"Décris les défauts ou particularités (mots-clés ou phrases) :\n"
+                f"Ex: rayure sur le couvercle, bouton droit cassé, légères traces d'usure\n\n"
+                f"Ou tape - pour ignorer."
+            )
+        return
+
+    elif data.startswith("listing_valider|"):
+        ref = data.split("|", 1)[1]
+        session["mode"] = None
+        data_flux = session.get("listing_data", {})
+        etat = session.get("listing_etat", "Bon etat")
+        titre = data_flux.get("titre") or data_flux.get("objet", ref)
+        # Sauvegarder annonce dans Airtable
+        thinking = await query.message.reply_text("💾 Sauvegarde annonce...")
+        try:
+            from modules.stock import update_annonce
+            annonce_txt = (
+                f"TITRE: {titre}\n\n"
+                f"{data_flux.get('description', '')}\n\n"
+                f"MOTS-CLES: {data_flux.get('mots_cles', '')}"
+            )
+            ok = await update_annonce(ref, annonce_txt, etat)
+            if ok:
+                await thinking.edit_text(
+                    f"✅ ANNONCE VALIDEE\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🔖 {ref}\n"
+                    f"📝 Titre : {titre}\n"
+                    f"🏷 Etat : {etat}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"Prêt à poster sur les plateformes !"
+                )
+            else:
+                await thinking.edit_text("⚠️ Erreur sauvegarde Airtable.")
+        except Exception as e:
+            await thinking.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
+        return
+
+    elif data.startswith("listing_mod_prix|"):
+        ref = data.split("|", 1)[1]
+        session["mode"] = "listing_attente_prix"
+        session["listing_ref"] = ref
+        await query.edit_message_text(
+            f"💶 Nouveau prix de vente pour {ref} ?\nEx: 45"
+        )
+        return
+
+    elif data.startswith("listing_mod_titre|"):
+        ref = data.split("|", 1)[1]
+        session["mode"] = "listing_attente_titre"
+        session["listing_ref"] = ref
+        data_flux = session.get("listing_data", {})
+        titre_actuel = data_flux.get("titre") or data_flux.get("objet", "")
+        await query.edit_message_text(
+            f"✏️ Titre actuel :\n{titre_actuel}\n\nTape le nouveau titre :"
+        )
+        return
+
+    elif data.startswith("listing_mod_annonce|"):
+        ref = data.split("|", 1)[1]
+        session["mode"] = "listing_attente_modif_annonce"
+        session["listing_ref"] = ref
+        data_flux = session.get("listing_data", {})
+        desc_actuelle = data_flux.get("description", "")
+        await query.message.reply_text(
+            f"📝 ANNONCE ACTUELLE — copie, modifie et renvoie :\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"{desc_actuelle}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Renvoie le texte corrigé tel que tu le veux."
+        )
+        return
+
+    elif data.startswith("listing_annuler|"):
+        session["mode"] = None
+        session["listing_data"] = None
+        await query.edit_message_text("❌ Génération annulée.")
+        return
 
     elif data == "flux_acheter":
         session = get_session(query.from_user.id)
@@ -525,24 +649,33 @@ async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await thinking.edit_text(f"⚠️ Erreur: {e}")
 
 async def cmd_annonce(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Alias de /listing pour rétrocompat."""
+    await cmd_listing(update, context)
+
+async def cmd_listing(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Nouveau flux listing : /listing REF — pose les questions état avant de générer."""
     if not context.args:
-        await update.message.reply_text("Usage : `/annonce [ref]`\nEx: `/annonce REF-2025-0001`", parse_mode="Markdown")
+        await update.message.reply_text(
+            "Usage : /listing REF\nEx: /listing AV-20260312-0001"
+        )
         return
     ref = context.args[0].upper()
     session = get_session(update.effective_user.id)
-    thinking = await update.message.reply_text(f"✍️ Génération *{ref}*...", parse_mode="Markdown")
-    try:
-        result = await generate_listing(ref)
-        await thinking.delete()
-        session["pending_listing_ref"] = ref
-        await update.message.reply_text(result, parse_mode="Markdown")
-        keyboard = [
-            [InlineKeyboardButton("🚀 Publier", callback_data=f"publier|{ref}")],
-            [InlineKeyboardButton("❌ Annuler", callback_data=f"annuler_pub|{ref}")]
-        ]
-        await update.message.reply_text("👆 Que faire ?", reply_markup=InlineKeyboardMarkup(keyboard))
-    except Exception as e:
-        await thinking.edit_text(f"⚠️ Erreur: {e}")
+    session["listing_ref"] = ref
+    session["mode"] = "listing_attente_etat"
+
+    from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
+    kb = IKM([
+        [IKB("🆕 Neuf", callback_data="etat|Neuf")],
+        [IKB("⭐ Très bon état", callback_data="etat|Tres bon etat")],
+        [IKB("✅ Bon état", callback_data="etat|Bon etat")],
+        [IKB("🟡 Satisfaisant", callback_data="etat|Satisfaisant")],
+        [IKB("🔧 Pour pièces", callback_data="etat|Pour pieces")],
+    ])
+    await update.message.reply_text(
+        f"📦 Génération annonce — {ref}\n\nQuel est l'état de l'objet ?",
+        reply_markup=kb
+    )
 
 async def cmd_rapport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     periode = "mois" if context.args and context.args[0].lower() == "mensuel" else "semaine"
@@ -681,6 +814,85 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await thinking.edit_text("⚠️ Erreur Airtable — vérifiez la base.")
         except Exception as e:
             logger.error(f"archiver error: {e}", exc_info=True)
+            await thinking.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
+        return
+
+    # ── LISTING : saisie détails état ─────────────────────
+    if session.get("mode") == "listing_attente_details":
+        details = text if text != "-" else ""
+        session["listing_details"] = details
+        session["mode"] = "listing_generation"
+        ref = session.get("listing_ref", "?")
+        etat = session.get("listing_etat", "Bon etat")
+        thinking = await update.message.reply_text(f"📝 Génération annonce {ref}...")
+        try:
+            from modules.flux import generer_annonce
+            from modules.stock import get_product_by_ref
+            prod = await get_product_by_ref(ref)
+            data_flux = prod if prod else {"objet": ref, "prix_revente": 0, "demande": "?", "prix_moyen": 0, "vitesse": "?"}
+            data_flux = await generer_annonce(data_flux, etat=etat, details=details)
+            session["listing_data"] = data_flux
+            session["mode"] = "listing_validation"
+            await thinking.delete()
+            await _afficher_annonce_avec_boutons(update.message, data_flux, ref)
+        except Exception as e:
+            logger.error(f"generer_annonce error: {e}", exc_info=True)
+            await thinking.edit_text(f"⚠️ Erreur génération : {str(e)[:200]}")
+        return
+
+    elif session.get("mode") == "listing_attente_prix":
+        try:
+            nouveau_prix = float(text.replace(",", ".").replace("€", "").strip())
+        except ValueError:
+            await update.message.reply_text("⚠️ Tapez juste un nombre, ex: 45")
+            return
+        ref = session.get("listing_ref", "?")
+        data_flux = session.get("listing_data", {})
+        data_flux["prix_revente"] = nouveau_prix
+        session["listing_data"] = data_flux
+        session["mode"] = "listing_validation"
+        await _afficher_annonce_avec_boutons(update.message, data_flux, ref)
+        return
+
+    elif session.get("mode") == "listing_attente_titre":
+        ref = session.get("listing_ref", "?")
+        data_flux = session.get("listing_data", {})
+        data_flux["titre"] = text
+        data_flux["titre_ebay"] = text
+        data_flux["titre_lbc"] = text
+        data_flux["titre_vinted"] = text
+        session["listing_data"] = data_flux
+        session["mode"] = "listing_validation"
+        await _afficher_annonce_avec_boutons(update.message, data_flux, ref)
+        return
+
+    elif session.get("mode") == "listing_attente_modif_annonce":
+        # L'utilisateur renvoie le texte corrigé — on le réécrit tel quel
+        ref = session.get("listing_ref", "?")
+        data_flux = session.get("listing_data", {})
+        thinking = await update.message.reply_text("✏️ Application de ta correction...")
+        try:
+            from anthropic import AsyncAnthropic
+            from modules.flux import CLAUDE_MODEL
+            _client = AsyncAnthropic()
+            r = await _client.messages.create(
+                model=CLAUDE_MODEL, max_tokens=1000,
+                messages=[{"role": "user", "content": (
+                    f"Voici une description d'annonce que l'utilisateur a corrigée :\n\n"
+                    f"{text}\n\n"
+                    f"Réécris-la proprement : corrige les fautes d'orthographe évidentes, "
+                    f"améliore la ponctuation si nécessaire, mais CONSERVE exactement le sens, "
+                    f"le contenu et la structure. Ne rajoute rien. Ne retire rien.\n\n"
+                    f"Réponds UNIQUEMENT avec la description réécrite, sans commentaire."
+                )}]
+            )
+            nouvelle_desc = r.content[0].text.strip() if r.content else text
+            data_flux["description"] = nouvelle_desc
+            session["listing_data"] = data_flux
+            session["mode"] = "listing_validation"
+            await thinking.delete()
+            await _afficher_annonce_avec_boutons(update.message, data_flux, ref)
+        except Exception as e:
             await thinking.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
         return
 
@@ -1231,6 +1443,7 @@ def main():
     app.add_handler(CommandHandler("stock", cmd_stock))
     app.add_handler(CommandHandler("chercher", cmd_chercher))
     app.add_handler(CommandHandler("annonce", cmd_annonce))
+    app.add_handler(CommandHandler("listing", cmd_listing))
     app.add_handler(CommandHandler("rapport", cmd_rapport))
     app.add_handler(CommandHandler("finances", cmd_finances))
     app.add_handler(CommandHandler("statut", cmd_statut))
