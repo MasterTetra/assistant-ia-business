@@ -207,15 +207,15 @@ async def publier_sur_ebay(
     photo_urls_direct = convertir_liens_drive(",".join(photo_urls)) if photo_urls else []
     photos_xml = _build_photos_xml(photo_urls_direct)
 
-    # Description HTML simple
-    desc_html = f"<![CDATA[{description}]]>"
+    # Échapper tout le contenu texte pour XML
+    titre_safe = echapper_xml(titre[:80])
+    desc_safe = echapper_xml(description)
 
     # Durée de l'annonce (GTC = Good Till Cancelled)
-    titre_safe = echapper_xml(titre[:80])
     xml_body = f"""
   <Item>
     <Title>{titre_safe}</Title>
-    <Description>{desc_html}</Description>
+    <Description>{desc_safe}</Description>
     <PrimaryCategory><CategoryID>{categorie}</CategoryID></PrimaryCategory>
     <StartPrice>{prix:.2f}</StartPrice>
     <ConditionID>{condition_id}</ConditionID>
