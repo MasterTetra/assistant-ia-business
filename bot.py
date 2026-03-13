@@ -436,12 +436,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             quantite_lot = len(similaires) if similaires else 1
             ref_principale = similaires[0]["ref"] if similaires else ref
 
-            # ── Récupérer les photos depuis Airtable ──
+            # ── Récupérer les photos depuis Airtable et convertir les liens Drive ──
             photo_urls = []
             if similaires:
                 photos_raw = similaires[0].get("photos_urls", "")
                 if photos_raw:
-                    photo_urls = [u.strip() for u in photos_raw.split(",") if u.strip()]
+                    from modules.ebay_publish import convertir_liens_drive
+                    photo_urls = convertir_liens_drive(photos_raw)
+            logger.info(f"📸 Photos pour {ref} : {len(photo_urls)} URL(s) converties")
 
             # ── Vérifier si une annonce eBay existe déjà pour ce lot ──
             ebay_item_id_existant = similaires[0].get("ebay_item_id", "") if similaires else ""
