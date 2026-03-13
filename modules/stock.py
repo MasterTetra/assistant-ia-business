@@ -408,3 +408,79 @@ async def get_produits_achetes() -> list:
     except Exception as e:
         logger.error(f"get_produits_achetes error: {e}")
         return []
+
+
+async def get_produits_en_ligne_similaires(titre: str) -> list:
+    """
+    Retourne tous les articles 'en ligne' dont le titre (Description) est similaire.
+    Utilisé pour détecter les lots et gérer la quantité eBay.
+    """
+    try:
+        # Prendre les 4 premiers mots significatifs du titre comme clé de recherche
+        mots = [m for m in titre.split() if len(m) > 2][:4]
+        cle = " ".join(mots[:3]) if mots else titre[:20]
+        async with httpx.AsyncClient(timeout=20) as http:
+            resp = await http.get(
+                f"{AIRTABLE_URL}/{TABLE_PRODUITS}",
+                headers=HEADERS,
+                params={
+                    "filterByFormula": f"AND({{Statut}}='en ligne', FIND(LOWER('{cle.lower()}'), LOWER({{Description}}))>0)",
+                    "fields[]": ["Référence gestion", "Description", "Prix vente",
+                                 "Photos URLs", "eBay Item ID", "Prix achat unitaire"],
+                    "maxRecords": 200,
+                    "sort[0][field]": "Référence gestion",
+                    "sort[0][direction]": "asc"
+                }
+            )
+        records = resp.json().get("records", [])
+        return [
+            {
+                "ref":          r["fields"].get("Référence gestion", "?"),
+                "description":  r["fields"].get("Description", ""),
+                "prix_vente":   r["fields"].get("Prix vente", 0),
+                "photos_urls":  r["fields"].get("Photos URLs", ""),
+                "ebay_item_id": r["fields"].get("eBay Item ID", ""),
+                "prix_achat":   r["fields"].get("Prix achat unitaire", 0),
+                "record_id":    r["id"],
+            }
+            for r in records
+        ]
+    except Exception as e:
+        logger.error(f"get_produits_en_ligne_similaires error: {e}")
+        return []
+
+
+async def marquer_articles_vendus(refs: list, prix_vente: float, plateforme: str = "eBay") -> bool:
+    """
+    Passe les refs données de 'en ligne' à 'vendu' dans Airtable.
+    Met à jour date de vente, plateforme, prix de vente.
+    """
+    from datetime import datetime
+    date_vente = datetime.now().strftime("%Y-%m-%d")
+    try:
+        async with httpx.AsyncClient(timeout=30) as http:
+            for ref in refs:
+                # Trouver le record
+                resp = await http.get(
+                    f"{AIRTABLE_URL}/{TABLE_PRODUITS}",
+                    headers=HEADERS,
+                    params={"filterByFormula": f"{{Référence gestion}}='{ref}'", "maxRecords": 1}
+                )
+                records = resp.json().get("records", [])
+                if not records:
+                    continue
+                record_id = records[0]["id"]
+                await http.patch(
+                    f"{AIRTABLE_URL}/{TABLE_PRODUITS}/{record_id}",
+                    headers=HEADERS,
+                    json={"fields": {
+                        "Statut":           "vendu",
+                        "Date vente":       date_vente,
+                        "Plateforme vente": plateforme,
+                        "Prix vente":       prix_vente,
+                    }}
+                )
+        return True
+    except Exception as e:
+        logger.error(f"marquer_articles_vendus error: {e}")
+        return False
