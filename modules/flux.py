@@ -484,14 +484,15 @@ async def archiver(data: dict, ref: str, prix_achat_total: float, source: str,
                 # Prix achat total uniquement sur la première ligne
                 if i == 0:
                     fields["Prix achat total"] = round(float(prix_achat_total), 2)
+                logger.info(f"📤 INSERT Airtable — fields: {fields}")
                 resp = await http.post(
                     f"{AIRTABLE_URL}/{TABLE_PRODUITS}",
                     headers=HEADERS_AT,
                     json={"fields": fields}
                 )
+                logger.info(f"📥 Airtable réponse: {resp.status_code} | {resp.text[:600]}")
                 if resp.status_code not in (200, 201):
-                    logger.error(f"Airtable error ligne {i+1}: {resp.status_code} | {resp.text[:500]}")
-                    logger.error(f"Fields envoyés : {fields}")
+                    logger.error(f"❌ Airtable ECHEC ligne {i+1}: {resp.status_code} | {resp.text[:600]}")
                 else:
                     refs_creees.append(ref_i)
                     logger.info(f"✅ Airtable créé : {ref_i}")
