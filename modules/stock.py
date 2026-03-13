@@ -377,3 +377,34 @@ async def update_annonce(ref: str, annonce: str, etat: str = "") -> bool:
     except Exception as e:
         logger.error(f"update_annonce error: {e}")
         return False
+
+
+async def get_produits_achetes() -> list:
+    """Retourne tous les produits avec statut 'acheté' — en attente de listing."""
+    try:
+        async with httpx.AsyncClient(timeout=20) as http:
+            resp = await http.get(
+                f"{AIRTABLE_URL}/{TABLE_PRODUITS}",
+                headers=HEADERS,
+                params={
+                    "filterByFormula": "{Statut}='acheté'",
+                    "fields[]": ["Référence gestion", "Description", "Prix achat unitaire", "Prix vente", "Date achat"],
+                    "maxRecords": 100,
+                    "sort[0][field]": "Date achat",
+                    "sort[0][direction]": "desc"
+                }
+            )
+        records = resp.json().get("records", [])
+        return [
+            {
+                "ref": r["fields"].get("Référence gestion", "?"),
+                "description": r["fields"].get("Description", "")[:50],
+                "prix_achat": r["fields"].get("Prix achat unitaire", 0),
+                "prix_vente": r["fields"].get("Prix vente", 0),
+                "date": r["fields"].get("Date achat", ""),
+            }
+            for r in records
+        ]
+    except Exception as e:
+        logger.error(f"get_produits_achetes error: {e}")
+        return []
