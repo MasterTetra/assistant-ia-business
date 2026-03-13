@@ -59,10 +59,11 @@ def echapper_xml(texte: str) -> str:
 def convertir_liens_drive(photos_raw: str) -> list:
     """
     Convertit les liens Google Drive partagés en URLs directes compatibles eBay.
+    Utilise le format /thumbnail?id=FILE_ID&sz=s1600 (sans redirection, stable).
     Formats acceptés :
       - https://drive.google.com/file/d/FILE_ID/view?...
       - https://drive.google.com/open?id=FILE_ID
-      - https://drive.google.com/uc?export=view&id=FILE_ID  (déjà OK)
+      - https://drive.google.com/uc?export=view&id=FILE_ID
     """
     import re as _re
     if not photos_raw:
@@ -72,22 +73,19 @@ def convertir_liens_drive(photos_raw: str) -> list:
         raw = raw.strip()
         if not raw:
             continue
-        # Format /file/d/FILE_ID/view (lien de partage standard)
+        # Extraire le FILE_ID depuis n'importe quel format Drive
+        file_id = None
         m = _re.search(r"/file/d/([a-zA-Z0-9_-]+)", raw)
         if m:
-            urls.append(f"https://drive.google.com/uc?export=view&id={m.group(1)}")
-            continue
-        # Format ?id=FILE_ID
-        m = _re.search(r"[?&]id=([a-zA-Z0-9_-]+)", raw)
-        if m:
-            urls.append(f"https://drive.google.com/uc?export=view&id={m.group(1)}")
-            continue
-        # Déjà format direct
-        if "uc?export=view" in raw or "uc?id=" in raw:
-            urls.append(raw)
-            continue
-        # URL inconnue — garder
-        if raw.startswith("http"):
+            file_id = m.group(1)
+        else:
+            m = _re.search(r"[?&]id=([a-zA-Z0-9_-]+)", raw)
+            if m:
+                file_id = m.group(1)
+        if file_id:
+            # Format thumbnail — direct, sans redirection, sans & problématique
+            urls.append(f"https://drive.google.com/thumbnail?id={file_id}&sz=s1600")
+        elif raw.startswith("http"):
             urls.append(raw)
     return urls
 
@@ -142,11 +140,15 @@ def _get_xml_val(root: ET.Element, path: str) -> str:
 
 
 def _build_photos_xml(photo_urls: list) -> str:
-    """Génère le XML pour les photos eBay (max 12)."""
+    """Génère le XML pour les photos eBay (max 12). Échappe les & dans les URLs."""
     if not photo_urls:
         return ""
-    pics = "\n".join(f"<PictureURL>{url.strip()}</PictureURL>" for url in photo_urls[:12])
-    return f"<PictureDetails>{pics}</PictureDetails>"
+    pics = "\n".join(
+        f"<PictureURL>{url.strip().replace('&', '&amp;')}</PictureURL>"
+        for url in photo_urls[:12]
+        if url.strip()
+    )
+    return f"<PictureDetails>{pics}</PictureDetails>" if pics else ""
 
 
 def _detect_categorie(titre: str, description: str) -> str:
