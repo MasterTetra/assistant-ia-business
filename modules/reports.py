@@ -7,6 +7,11 @@ Colonnes Airtable réelles. Nouveaux statuts v2.
 import httpx
 import logging
 from datetime import datetime, timedelta
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
+PARIS_TZ = ZoneInfo("Europe/Paris")
 from config.settings import AIRTABLE_API_KEY, AIRTABLE_BASE_ID, TABLE_PRODUITS
 
 logger = logging.getLogger(__name__)
@@ -157,7 +162,7 @@ def _charges_sociales(ca: float) -> float:
 
 
 async def generate_report(periode: str = "semaine") -> str:
-    now = datetime.now()
+    now = datetime.now(PARIS_TZ)
     if periode in ("jour", "journalier"):
         debut = now.replace(hour=0, minute=0, second=0, microsecond=0)
         label = f"AUJOURD'HUI — {now.strftime('%d/%m/%Y')}"
@@ -339,7 +344,7 @@ async def generate_report(periode: str = "semaine") -> str:
 async def generate_stock_report() -> str:
     """Rapport détaillé du stock par statut."""
     fl = await _fetch_all_records()
-    now = datetime.now()
+    now = datetime.now(PARIS_TZ)
 
     def items(s): return [f for f in fl if f.get("Statut") == s]
 
