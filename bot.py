@@ -143,7 +143,7 @@ async def aide(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💰 */finances* → Bilan financier complet\n"
         "⚡ */dashboard* → Ventes temps réel\n"
         "📦 */stock* → État du stock détaillé\n"
-        "🔄 */statut [ref] [statut] [plateforme]* → Mettre à jour un statut\n\n"
+        "🔍 */recherche [article]* → Analyse marché + liens annonces\n"        "🔍 */recherche [art1], [art2]* → Rapport multi-articles\n"        "🔄 */statut [ref] [statut] [plateforme]* → Mettre à jour un statut\n\n"
         "💡 *Flow achat :*\n"
         "1. /acheter\n"
         "2. Envoie tes photos\n"
@@ -1846,6 +1846,92 @@ async def cmd_lot_annuler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session["lot_resultats"] = []
     await update.message.reply_text(f"❌ Lot annulé. {nb} photo(s) supprimées.")
 
+async def cmd_recherche(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /recherche iPhone 14 Pro 256Go
+    /recherche iPhone 14 Pro, Airpods Pro 2, MacBook Air M2
+    /recherche
+    Casquette Nike Dri-Fit
+    Porte-clé Renault Sport
+    Veste The North Face
+
+    Analyse le marché pour 1 ou plusieurs articles, retourne prix + liens + score.
+    """
+    from modules.flux import recherche_texte, recherche_multiple, formater_recherche, formater_rapport_multiple
+
+    # Récupérer le texte : args de la commande OU lignes du message
+    if context.args:
+        texte_brut = " ".join(context.args)
+    elif update.message.text:
+        # Enlever la commande /recherche du début
+        texte_brut = update.message.text.replace("/recherche", "").strip()
+    else:
+        await update.message.reply_text(
+            "🔍 *Recherche marché*\n\n"
+            "Envoie une ou plusieurs références :\n\n"
+            "`/recherche iPhone 14 Pro 256Go`\n\n"
+            "Ou plusieurs articles (séparés par virgule ou saut de ligne) :\n"
+            "`/recherche iPhone 14 Pro, Airpods Pro 2`\n\n"
+            "Le bot cherche sur eBay, LBC, Vinted et te renvoie :\n"
+            "  • Prix du marché + liens annonces\n"
+            "  • Prix d'achat max conseillé\n"
+            "  • Score opportunité /10",
+            parse_mode="Markdown"
+        )
+        return
+
+    if not texte_brut:
+        await update.message.reply_text("⚠️ Précise au moins un article à rechercher.")
+        return
+
+    # Découper en plusieurs requêtes si virgule ou saut de ligne
+    separateurs = ["\n", ",", ";"]
+    queries = [texte_brut]
+    for sep in separateurs:
+        if sep in texte_brut:
+            queries = [q.strip() for q in texte_brut.split(sep) if q.strip()]
+            break
+
+    # Limiter à 5 articles max par message
+    if len(queries) > 5:
+        queries = queries[:5]
+        await update.message.reply_text("⚠️ Maximum 5 articles par recherche — je traite les 5 premiers.")
+
+    nb = len(queries)
+    thinking = await update.message.reply_text(
+        f"🔍 Recherche en cours pour *{nb}* article(s)...\n"
+        f"⏳ Environ {nb * 8}-{nb * 15} secondes",
+        parse_mode="Markdown"
+    )
+
+    try:
+        if nb == 1:
+            data = await recherche_texte(queries[0])
+            result = formater_recherche(data)
+            await thinking.edit_text(result, parse_mode="Markdown", disable_web_page_preview=True)
+        else:
+            await thinking.edit_text(
+                f"🔍 Recherche {nb} articles en parallèle...\n"
+                f"  {chr(10).join(f'  • {q}' for q in queries)}",
+                parse_mode="Markdown"
+            )
+            results = await recherche_multiple(queries)
+            # Rapport consolidé
+            rapport = formater_rapport_multiple(results)
+            await thinking.edit_text(rapport, parse_mode="Markdown", disable_web_page_preview=True)
+            # Puis détail de chaque article
+            for data in results:
+                detail = formater_recherche(data)
+                await update.message.reply_text(
+                    detail,
+                    parse_mode="Markdown",
+                    disable_web_page_preview=True
+                )
+    except Exception as e:
+        logger.error(f"Erreur recherche: {e}", exc_info=True)
+        await thinking.edit_text(f"⚠️ Erreur lors de la recherche: {str(e)[:200]}")
+
+
 async def cmd_statut(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /statut                         → menu pour choisir article + statut
@@ -1921,6 +2007,8 @@ def main():
     app.add_handler(CommandHandler("finances", cmd_finances))
     app.add_handler(CommandHandler("dashboard", cmd_dashboard))
     app.add_handler(CommandHandler("stock", cmd_stock))
+    app.add_handler(CommandHandler("recherche", cmd_recherche))
+    app.add_handler(CommandHandler("search", cmd_recherche))
     app.add_handler(CommandHandler("statut", cmd_statut))
     app.add_handler(CommandHandler("vendre", cmd_vendre))
     app.add_handler(CommandHandler("lot_debut", cmd_lot_debut))
