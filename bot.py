@@ -1920,33 +1920,48 @@ async def cmd_recherche(update: Update, context: ContextTypes.DEFAULT_TYPE):
             liste = "\n".join(f"  {i+1}. {q}" for i, q in enumerate(queries))
             await thinking.edit_text(
                 f"🔍 Analyse de *{nb}* articles en cours...\n{liste}\n\n"
-                f"⏳ ~{nb*10}-{nb*20}s — une fiche par article",
+                f"⏳ ~{nb * 20}-{nb * 30}s (séquentiel pour fiabilité)\n"
+                f"_Une fiche par article sera envoyée_",
                 parse_mode="Markdown"
             )
             results = await recherche_multiple(queries)
-            # Supprimer le message "en cours"
             try:
                 await thinking.delete()
             except Exception:
                 pass
-            # Une fiche séparée par article, dans l'ordre du score
-            for data in sorted(results, key=lambda x: x["score"], reverse=True):
-                detail = formater_recherche(data)
+            # Fiches individuelles triées par score (les meilleures d'abord)
+            ok = [r for r in results if not r.get("erreur")]
+            errors = [r for r in results if r.get("erreur")]
+            for data in sorted(ok, key=lambda x: x["score"], reverse=True):
                 await update.message.reply_text(
-                    detail,
+                    formater_recherche(data),
                     parse_mode="Markdown",
                     disable_web_page_preview=True
                 )
-            # Résumé final compact
-            rapport = formater_rapport_multiple(results)
-            await update.message.reply_text(
-                rapport,
-                parse_mode="Markdown",
-                disable_web_page_preview=True
-            )
+            for data in errors:
+                await update.message.reply_text(
+                    formater_recherche(data),
+                    parse_mode="Markdown",
+                    disable_web_page_preview=True
+                )
+            # Résumé final si au moins 2 succès
+            if len(ok) >= 2:
+                rapport = formater_rapport_multiple(ok)
+                await update.message.reply_text(
+                    rapport,
+                    parse_mode="Markdown",
+                    disable_web_page_preview=True
+                )
     except Exception as e:
         logger.error(f"Erreur recherche: {e}", exc_info=True)
-        await thinking.edit_text(f"⚠️ Erreur lors de la recherche: {str(e)[:200]}")
+        err_str = str(e)
+        if "529" in err_str or "overloaded" in err_str.lower():
+            msg = "⏳ *API surchargée* — réessaie dans 1-2 minutes.\n\n_C'est un problème temporaire côté Anthropic._"
+        elif "429" in err_str:
+            msg = "⏳ *Trop de requêtes* — réessaie dans 1 minute."
+        else:
+            msg = f"⚠️ Erreur: {err_str[:150]}"
+        await thinking.edit_text(msg, parse_mode="Markdown")
 
 
 async def cmd_statut(update: Update, context: ContextTypes.DEFAULT_TYPE):
