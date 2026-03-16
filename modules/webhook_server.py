@@ -187,7 +187,7 @@ async def handle_ebay_notification(payload: dict) -> str:
         item_title = data.get("item", {}).get("title", "")
         articles = await trouver_article_en_ligne(description=item_title)
         for art in articles[:1]:
-            await mettre_a_jour_statut(art["id"], "expédié", plateforme="eBay")
+            await mettre_a_jour_statut(art["id"], "en cours d'expédition", plateforme="eBay")
             ref = art.get("fields", {}).get("Référence gestion", "?")
             await notifier_telegram(
                 f"📦 EXPÉDIÉ — {item_title[:40]}\nRéférence : {ref}\nStatut → expédié ✅"
@@ -249,8 +249,8 @@ async def handle_makecom_notification(payload: dict) -> str:
 
     statut_map = {
         "vendu": "vendu",
-        "expedie": "expédié",
-        "expédié": "expédié",
+        "expedie": "en cours d'expédition",
+        "en cours d'expédition": "en cours d'expédition",
         "livre": "livré",
         "livré": "livré"
     }
