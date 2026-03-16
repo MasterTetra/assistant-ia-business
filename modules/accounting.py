@@ -120,9 +120,11 @@ async def get_financial_summary() -> str:
     """Bilan financier complet toutes périodes confondues."""
     records = await _fetch_all()
 
-    vendus = [f for f in records if f.get("Statut") in ("vendu", "en cours d'expédition", "livré")]
-    en_cours = [f for f in records if f.get("Statut") not in ("vendu", "en cours d'expédition", "livré")]
-    en_ligne = [f for f in records if f.get("Statut") == "en ligne"]
+    # Statuts v2 : seul "vendu" = vente finalisée pour comptabilité
+    vendus    = [f for f in records if f.get("Statut") == "vendu"]
+    en_attente = [f for f in records if f.get("Statut") in ("en cours d'expédition", "livré")]
+    en_cours  = [f for f in records if f.get("Statut") not in ("vendu", "en cours d'expédition", "livré")]
+    en_ligne  = [f for f in records if f.get("Statut") == "en ligne"]
 
     # ── Résultats réalisés ────────────────────────────────────
     ca = sum(_pv(f) for f in vendus)
@@ -131,8 +133,17 @@ async def get_financial_summary() -> str:
     ft_total = sum(_ft(f) for f in vendus)
     marge_brute = ca - cout
     marge_nette = marge_brute - fp_total - ft_total
+    # TVA sur marge (Art. 297A CGI)
     tva_totale = sum(_tva_marge(f) for f in vendus)
-    marge_apres_tva = marge_nette - tva_totale
+    benefice_avant_is = marge_nette - tva_totale
+    # IS SAS : 15% jusqu'à 42 500€, 25% au-delà
+    if benefice_avant_is <= 0:
+        is_estime = 0.0
+    elif benefice_avant_is <= 42500:
+        is_estime = benefice_avant_is * 0.15
+    else:
+        is_estime = 42500 * 0.15 + (benefice_avant_is - 42500) * 0.25
+    resultat_net = benefice_avant_is - is_estime
 
     # ── Par plateforme ────────────────────────────────────────
     pf_data: dict = {}
@@ -171,10 +182,12 @@ async def get_financial_summary() -> str:
         f"  • Taux de marge : *{(marge_nette/ca*100) if ca else 0:.1f}%*",
         "",
         "━━━━━━━━━━━━━━━━━━━━━━",
-        "🧾 *TVA SUR LA MARGE (Art. 297A CGI)*",
-        f"  • TVA collectée estimée : *{tva_totale:.2f}€*",
-        f"  • Marge nette après TVA : *{marge_apres_tva:.2f}€*",
-        f"  ⚠️ À confirmer avec votre comptable",
+        "🧾 *FISCALITÉ SAS*",
+        f"  • TVA sur marge (Art.297A CGI) : -{tva_totale:.2f}€",
+        f"  • Bénéfice avant IS : *{benefice_avant_is:.2f}€*",
+        f"  • IS estimé (15%/25%) : -{is_estime:.2f}€",
+        f"  • *Résultat net SAS : {resultat_net:.2f}€*",
+        f"  ⚠️ Estimations — à valider avec votre expert-comptable",
         "",
         "━━━━━━━━━━━━━━━━━━━━━━",
         "🏪 *PAR PLATEFORME*",
@@ -194,6 +207,20 @@ async def get_financial_summary() -> str:
     ]
     if potentiel_vente > 0:
         lines.append(f"  • Potentiel ventes : *{potentiel_vente:.2f}€* (marge +{pot_marge:.2f}€)")
+
+    # Section EN ATTENTE
+    if en_attente:
+        ca_att = sum(_pv(f) for f in en_attente)
+        cout_att = sum(_pa(f) for f in en_attente)
+        lines += [
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            "⏳ *EN ATTENTE DE CONFIRMATION*",
+            f"  • {sum(1 for f in en_attente if f.get('Statut') == 'en cours d\'expédition')} en cours d'expédition",
+            f"  • {sum(1 for f in en_attente if f.get('Statut') == 'livré')} livrés (attente acheteur)",
+            f"  • CA potentiel : *{ca_att:.2f}€* | Marge brute : *{ca_att - cout_att:.2f}€*",
+            f"  ℹ️ _Non comptabilisé tant que non confirmé_",
+        ]
 
     if top5:
         lines += ["", "━━━━━━━━━━━━━━━━━━━━━━", "🏆 *TOP 5 MEILLEURES MARGES*"]
