@@ -115,17 +115,15 @@ async def generate_report(periode: str = "semaine") -> str:
 
     achetes = [f for f in fl if date_ok(f.get("Date achat", ""))]
 
-    # DEBUG — log des champs financiers pour diagnostiquer
-    for i, f in enumerate(achetes[:5]):  # max 5 fiches
-        logger.info(
-            f"DEBUG fiche {i+1}: "
-            f"ref={f.get('Référence gestion','?')} | "
-            f"pa_total={f.get('Prix achat total','VIDE')} | "
-            f"pa_unit={f.get('Prix achat unitaire','VIDE')} | "
-            f"qte={f.get('Quantite totale','VIDE')} | "
-            f"→ _pa_total_fiche={_prix_achat_total_fiche(f):.4f}"
-        )
-    logger.info(f"DEBUG total capital calculé: {sum(_prix_achat_total_fiche(f) for f in achetes):.4f}€ pour {len(achetes)} fiches")
+    # DEBUG — log de toutes les valeurs distinctes
+    valeurs = {}
+    for f in achetes:
+        val = _prix_achat_total_fiche(f)
+        key = f"{f.get('Prix achat total','VIDE')}|{f.get('Prix achat unitaire','VIDE')}|{f.get('Quantite totale','VIDE')}|{val:.4f}"
+        valeurs[key] = valeurs.get(key, 0) + 1
+    for k, nb in sorted(valeurs.items()):
+        logger.info(f"DEBUG valeur: [{k}] × {nb} fiches")
+    logger.info(f"DEBUG total: {sum(_prix_achat_total_fiche(f) for f in achetes):.4f}€ pour {len(achetes)} fiches")
     vendus = [f for f in fl if f.get("Statut") in ("vendu", "expédié", "livré") and date_ok(f.get("Date vente", ""))]
     en_ligne = [f for f in fl if f.get("Statut") == "en ligne"]
     en_stock = [f for f in fl if f.get("Statut") in ("acheté", "en stockage", "en rénovation")]
