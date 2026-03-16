@@ -45,12 +45,21 @@ async def _fetch_all() -> list:
     return [r.get("fields", {}) for r in records]
 
 
-def _pa(f): 
+def _pa(f):
+    """Prix achat unitaire — pour calcul de marge par article vendu."""
     pu = f.get("Prix achat unitaire")
     if pu: return float(pu)
     t = float(f.get("Prix achat total") or 0)
     q = float(f.get("Quantite totale") or 1)
     return t / q if q else t
+
+def _pa_total(f):
+    """Prix achat total de la fiche — pour capital immobilisé."""
+    total = f.get("Prix achat total")
+    if total: return float(total)
+    pu = float(f.get("Prix achat unitaire") or 0)
+    qte = float(f.get("Quantite totale") or 1)
+    return pu * qte
 
 def _pv(f): return float(f.get("Prix vente") or 0)
 
@@ -115,9 +124,9 @@ async def get_financial_summary() -> str:
         pf_data[pf]["frais"] += _fp(f)
 
     # ── Stock et trésorerie ───────────────────────────────────
-    capital_stock = sum(_pa(f) for f in en_cours)
+    capital_stock = sum(_pa_total(f) for f in en_cours)
     potentiel_vente = sum(_pv(f) for f in en_ligne if _pv(f))
-    pot_marge = potentiel_vente - sum(_pa(f) for f in en_ligne)
+    pot_marge = potentiel_vente - sum(_pa_total(f) for f in en_ligne)
 
     # ── Top articles vendus (par marge) ──────────────────────
     top5 = sorted(vendus, key=_marge_nette, reverse=True)[:5]
