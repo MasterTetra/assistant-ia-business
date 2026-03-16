@@ -155,17 +155,23 @@ def _build_photos_xml(photo_urls: list) -> str:
 def _detect_categorie(titre: str, description: str) -> str:
     """Détecte automatiquement la catégorie eBay selon le contenu."""
     texte = (titre + " " + description).lower()
-    if any(w in texte for w in ["t-shirt", "veste", "pantalon", "robe", "casquette", "chaussure", "vêtement"]):
+    if any(w in texte for w in ["porte-clé", "porte-cle", "porte clé", "keychain", "keyring"]):
+        return CATEGORIES_DEFAUT["porte-cles"]
+    if any(w in texte for w in ["t-shirt", "veste", "pantalon", "robe", "chaussure", "vêtement"]):
+        return CATEGORIES_DEFAUT["vetement"]
+    if any(w in texte for w in ["casquette", "bonnet", "chapeau"]):
         return CATEGORIES_DEFAUT["vetement"]
     if any(w in texte for w in ["téléphone", "smartphone", "laptop", "ordinateur", "écran", "câble", "console"]):
         return CATEGORIES_DEFAUT["electronique"]
     if any(w in texte for w in ["canapé", "chaise", "table", "lampe", "meuble", "cuisine", "maison"]):
         return CATEGORIES_DEFAUT["maison"]
-    if any(w in texte for w in ["vélo", "tennis", "ski", "foot", "sport", "fitness"]):
+    if any(w in texte for w in ["vélo", "tennis", "ski", "foot", "fitness"]):
         return CATEGORIES_DEFAUT["sport"]
     if any(w in texte for w in ["jouet", "lego", "figurine", "jeu", "enfant"]):
         return CATEGORIES_DEFAUT["jouet"]
-    if any(w in texte for w in ["sac", "ceinture", "bijou", "montre", "porte-clé", "portefeuille"]):
+    if any(w in texte for w in ["voiture", "auto", "moto", "automobile"]):
+        return CATEGORIES_DEFAUT["auto"]
+    if any(w in texte for w in ["sac", "ceinture", "bijou", "montre", "portefeuille"]):
         return CATEGORIES_DEFAUT["accessoire"]
     return CATEGORIES_DEFAUT["default"]
 
@@ -234,6 +240,7 @@ async def publier_sur_ebay(
     parts.append(f'<StartPrice currencyID="EUR">{prix:.2f}</StartPrice>')
     parts.append(f"<ConditionID>{condition_id}</ConditionID>")
     parts.append("<Country>FR</Country>")
+    parts.append("<Location>France</Location>")
     parts.append("<Currency>EUR</Currency>")
     parts.append("<DispatchTimeMax>3</DispatchTimeMax>")
     parts.append("<ListingDuration>GTC</ListingDuration>")
@@ -241,7 +248,6 @@ async def publier_sur_ebay(
     parts.append(f"<Quantity>{quantite}</Quantity>")
     parts.append("<ReturnPolicy>")
     parts.append("<ReturnsAcceptedOption>ReturnsAccepted</ReturnsAcceptedOption>")
-    parts.append("<RefundOption>MoneyBack</RefundOption>")
     parts.append("<ReturnsWithinOption>Days_30</ReturnsWithinOption>")
     parts.append("<ShippingCostPaidByOption>Buyer</ShippingCostPaidByOption>")
     parts.append("</ReturnPolicy>")
