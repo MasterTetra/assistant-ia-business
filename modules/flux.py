@@ -60,6 +60,31 @@ ENCOMBREMENT: [PETIT ou MOYEN ou GRAND]
 ENVOI: [FACILE ou MOYEN ou DIFFICILE]
 RAISON: [phrase courte factuelle basée sur les données trouvées]"""
 
+PROMPT_RAPIDE = """Tu es un expert en achat-revente d'occasion en France. Analyse cet objet rapidement.
+
+OBJET : {objet}
+DESCRIPTION : {caption}
+
+Utilise UNIQUEMENT tes connaissances sur les prix du marché français (eBay.fr, LBC, Vinted).
+Sois conservateur si tu n'es pas sûr de l'identification.
+
+Réponds UNIQUEMENT avec ce format exact, sans asterisques ni markdown :
+
+OBJET: [nom précis — marque + modèle si identifiable sur la photo]
+PRIX_BAS: [prix bas du marché en euros — jamais 0]
+PRIX_MOYEN: [prix médian du marché]
+PRIX_HAUT: [prix haut du marché]
+PRIX_REVENTE: [prix de vente réaliste — basé sur ventes conclues]
+NB_ANNONCES: [estimation : peu/moyen/beaucoup]
+DEMANDE: [FORTE ou MOYENNE ou FAIBLE]
+VITESSE: [RAPIDE ou NORMALE ou LENTE]
+POIDS: [grammes estimés]
+DIMENSIONS: [{dimensions}]
+ENCOMBREMENT: [PETIT ou MOYEN ou GRAND]
+ENVOI: [FACILE ou MOYEN ou DIFFICILE]
+RAISON: [1 phrase courte sur le marché]
+CONFIANCE: [HAUTE ou MOYENNE ou FAIBLE — ta certitude sur l'identification et les prix]"""
+
 PROMPT_ANNONCE = """Tu es expert en vente en ligne (eBay, Leboncoin, Vinted).
 
 OBJET : {objet}
@@ -145,6 +170,104 @@ def _extraire_dims(caption):
         caption, re.IGNORECASE
     )
     return f"{m.group(1)} x {m.group(2)} x {m.group(3)} cm" if m else ""
+
+
+async def analyser_marche_rapide(photo_url: str, caption: str) -> dict:
+    """
+    Phase 1 : Analyse immédiate depuis connaissances Claude — < 5 secondes.
+    Pas de web search. Retourne score + décision ACHETER/IGNORER instantanément.
+    """
+    objet = caption or "objet inconnu"
+    dims = _extraire_dims(caption)
+
+    # Télécharger photo
+    image_content = []
+    try:
+        async with httpx.AsyncClient(timeout=30) as http:
+            resp = await http.get(photo_url)
+            img = base64.standard_b64encode(resp.content).decode()
+            mt = "image/png" if "png" in resp.headers.get("content-type", "") else "image/jpeg"
+            image_content = [{"type": "image", "source": {"type": "base64", "media_type": mt, "data": img}}]
+    except Exception as e:
+        logger.warning(f"Photo download failed: {e}")
+
+    # Appel unique sans web search
+    prompt = PROMPT_RAPIDE.format(
+        objet=objet,
+        caption=caption or "aucune",
+        dimensions=dims or "à estimer"
+    )
+
+    r = await _retry(
+        client.messages.create,
+        model=CLAUDE_MODEL,
+        max_tokens=600,
+        messages=[{"role": "user", "content": image_content + [{"type": "text", "text": prompt}]}]
+    )
+
+    raw = ""
+    for block in r.content:
+        if hasattr(block, "text") and block.text:
+            raw += block.text + "\n"
+    raw = re.sub(r'\*\*(.+?)\*\*', r'\1', raw)
+    raw = re.sub(r'\*(.+?)\*', r'\1', raw)
+    logger.info(f"RAPIDE raw:\n{raw[:500]}")
+
+    objet_id  = _get(raw, "OBJET") or objet
+    prix_bas  = _num(raw, "PRIX_BAS")
+    prix_moy  = _num(raw, "PRIX_MOYEN")
+    prix_haut = _num(raw, "PRIX_HAUT")
+    prix_rev  = _num(raw, "PRIX_REVENTE") or prix_moy or prix_bas
+    demande   = _get(raw, "DEMANDE") or "MOYENNE"
+    vitesse   = _get(raw, "VITESSE") or "NORMALE"
+    poids     = _get(raw, "POIDS") or "?"
+    dimensions = dims or _get(raw, "DIMENSIONS") or "?"
+    encombr   = _get(raw, "ENCOMBREMENT") or "MOYEN"
+    envoi     = _get(raw, "ENVOI") or "MOYEN"
+    raison    = _get(raw, "RAISON") or ""
+    confiance = _get(raw, "CONFIANCE") or "MOYENNE"
+    annonces  = _annonces(raw)
+
+    achat_max, mult, label = _calcul_palier(prix_rev)
+    frais_pf = prix_rev * 0.13
+    achat_max_net = round((prix_rev - frais_pf) / mult, 2) if mult > 0 else achat_max
+
+    # Score
+    score = _calculer_score(demande, vitesse, prix_rev, achat_max, envoi)
+
+    return {
+        "objet": objet_id, "caption": caption,
+        "prix_bas": prix_bas, "prix_moyen": prix_moy, "prix_haut": prix_haut,
+        "prix_revente": prix_rev, "achat_max": achat_max, "achat_max_net": achat_max_net,
+        "mult": mult, "label": label,
+        "demande": demande, "vitesse": vitesse,
+        "poids": poids, "dimensions": dimensions,
+        "encombrement": encombr, "envoi": envoi,
+        "raison": raison, "confiance": confiance,
+        "annonces": annonces, "score": score,
+        "market_data": "",  # sera rempli par la Phase 2
+        "phase": "rapide",
+    }
+
+
+def _calculer_score(demande, vitesse, prix_rev, achat_max, envoi):
+    """Calcul du score identique à l'ancien système."""
+    score = 0.0
+    if demande.upper() == "FORTE":    score += 2.5
+    elif demande.upper() == "MOYENNE": score += 1.5
+    else: score += 0.5
+    if vitesse.upper() == "RAPIDE":   score += 2.0
+    elif vitesse.upper() == "NORMALE": score += 1.0
+    taux = ((prix_rev - achat_max) / achat_max) if achat_max > 0 else 0
+    if taux >= 2.0:   score += 3.0
+    elif taux >= 1.5: score += 2.5
+    elif taux >= 1.0: score += 2.0
+    elif taux >= 0.5: score += 1.0
+    elif taux > 0:    score += 0.5
+    if envoi.upper() == "FACILE":     score += 1.5
+    elif envoi.upper() == "MOYEN":    score += 0.75
+    else: score -= 0.5
+    return round(max(1.0, min(10.0, score)), 1)
 
 
 async def analyser_marche(photo_url: str, caption: str) -> dict:
