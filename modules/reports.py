@@ -47,12 +47,31 @@ async def _fetch_all_records() -> list:
 
 
 def _prix_achat(f: dict) -> float:
+    """
+    Prix d'achat unitaire pour les calculs de marge.
+    Distingue :
+    - Article unique  : utilise Prix achat unitaire ou Prix achat total
+    - Lot             : utilise Prix achat unitaire (déjà calculé à l'archivage)
+    """
     pu = f.get("Prix achat unitaire")
     if pu:
         return float(pu)
     total = float(f.get("Prix achat total") or 0)
     qte = float(f.get("Quantite totale") or 1)
     return total / qte if qte else total
+
+def _prix_achat_total_fiche(f: dict) -> float:
+    """Prix d'achat total de la fiche entière (lot ou article unique)."""
+    total = f.get("Prix achat total")
+    if total:
+        return float(total)
+    pu = float(f.get("Prix achat unitaire") or 0)
+    qte = float(f.get("Quantite totale") or 1)
+    return pu * qte
+
+def _est_lot(f: dict) -> bool:
+    """Retourne True si la fiche représente un lot (quantité > 1)."""
+    return float(f.get("Quantite totale") or 1) > 1
 
 
 def _frais_pf(f: dict) -> float:
@@ -75,7 +94,10 @@ def _marge(f: dict) -> float:
 
 async def generate_report(periode: str = "semaine") -> str:
     now = datetime.now()
-    if periode == "semaine":
+    if periode in ("jour", "journalier"):
+        debut = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        label = f"AUJOURD'HUI — {now.strftime('%d/%m/%Y')}"
+    elif periode == "semaine":
         debut = now - timedelta(days=7)
         label = "7 DERNIERS JOURS"
     elif periode == "mois":
@@ -117,10 +139,10 @@ async def generate_report(periode: str = "semaine") -> str:
         sources[src] = sources.get(src, 0) + 1
 
     meilleure = max(vendus, key=_marge, default=None)
-    capital_investi = sum(_prix_achat(f) for f in achetes)
-    capital_stock = sum(_prix_achat(f) for f in en_ligne + en_stock)
+    capital_investi = sum(_prix_achat_total_fiche(f) for f in achetes)
+    capital_stock = sum(_prix_achat_total_fiche(f) for f in en_ligne + en_stock)
     potentiel = sum(float(f.get("Prix vente") or 0) for f in en_ligne)
-    pot_marge = potentiel - sum(_prix_achat(f) for f in en_ligne)
+    pot_marge = potentiel - sum(_prix_achat_total_fiche(f) for f in en_ligne)
 
     lines = [
         f"📊 *RAPPORT — {label}*",
@@ -208,7 +230,7 @@ async def generate_stock_report() -> str:
         if not items:
             continue
         emoji = emojis.get(s, "•")
-        val = sum(_prix_achat(f) for f in items)
+        val = sum(_prix_achat_total_fiche(f) for f in items)
         lines.append(f"{emoji} *{s.capitalize()}* : {len(items)} articles — {val:.2f}€")
         if s == "en ligne":
             pf_c: dict = {}
@@ -218,6 +240,6 @@ async def generate_stock_report() -> str:
             for pf, nb in sorted(pf_c.items(), key=lambda x: x[1], reverse=True):
                 lines.append(f"   └ {pf} : {nb} articles")
 
-    capital = sum(_prix_achat(f) for f in fl if f.get("Statut") not in ("vendu", "expédié", "livré"))
+    capital = sum(_prix_achat_total_fiche(f) for f in fl if f.get("Statut") not in ("vendu", "expédié", "livré"))
     lines += ["", f"📊 Capital actif immobilisé : *{capital:.2f}€*"]
     return "\n".join(lines)
