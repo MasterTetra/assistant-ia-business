@@ -602,6 +602,244 @@ async def get_articles_prets_a_poster() -> list:
         return []
 
 
+
+
+
+async def update_annonce_airtable(record_id: str, annonce: str) -> bool:
+    """Met à jour le champ 'Annonce générée' d'un record Airtable par son ID."""
+    try:
+        async with httpx.AsyncClient(timeout=20) as http:
+            resp = await http.patch(
+                f"{AIRTABLE_URL}/{TABLE_PRODUITS}/{record_id}",
+                headers=HEADERS,
+                json={"fields": {"Annonce générée": annonce}}
+            )
+        return resp.status_code == 200
+    except Exception as e:
+        logger.error(f"update_annonce_airtable error: {e}")
+        return False
+
+
+async def get_articles_pour_annonce() -> list:
+    """
+    Pour /annonce : récupère tous les articles statut 'acheté' avec tous leurs champs.
+    Détecte les lots : articles STRICTEMENT identiques sur
+    (description, prix_achat_unitaire, prix_vente, quantite_totale, date_achat)
+    ET dont les références gestion se suivent dans le tableur.
+    Retourne une liste de groupes : chaque groupe = 1 annonce à créer.
+    """
+    fields = [
+        "Référence gestion", "Description", "Prix achat unitaire",
+        "Prix achat total", "Quantite totale", "Prix vente",
+        "Date achat", "Statut", "Photos URLs", "Annonce générée",
+        "Notes", "Nombre de photos",
+    ]
+    try:
+        async with httpx.AsyncClient(timeout=20) as http:
+            resp = await http.get(
+                f"{AIRTABLE_URL}/{TABLE_PRODUITS}",
+                headers=HEADERS,
+                params={
+                    "filterByFormula": "{Statut}='acheté'",
+                    "fields[]": fields,
+                    "maxRecords": 200,
+                    "sort[0][field]": "Référence gestion",
+                    "sort[0][direction]": "asc",
+                }
+            )
+        records = resp.json().get("records", [])
+    except Exception as e:
+        logger.error(f"get_articles_pour_annonce error: {e}")
+        return []
+
+    articles = []
+    for r in records:
+        f = r["fields"]
+        articles.append({
+            "ref":        f.get("Référence gestion", "?"),
+            "record_id":  r["id"],
+            "description":    f.get("Description", ""),
+            "prix_achat_u":   float(f.get("Prix achat unitaire") or 0),
+            "prix_achat_tot": float(f.get("Prix achat total") or 0),
+            "qte_totale":     int(f.get("Quantite totale") or 1),
+            "prix_vente":     float(f.get("Prix vente") or 0),
+            "date_achat":     f.get("Date achat", ""),
+            "photos_urls":    f.get("Photos URLs", ""),
+            "annonce":        f.get("Annonce générée", ""),
+            "notes":          f.get("Notes", ""),
+            "nb_photos":      f.get("Nombre de photos", 0),
+        })
+
+    if not articles:
+        return []
+
+    # ── Détection des lots ────────────────────────────────────────────────────
+    # Clé d'identité stricte : description + prix_achat_u + prix_vente + qte_totale + date_achat
+    def cle_identite(a):
+        return (
+            a["description"].strip().lower(),
+            round(a["prix_achat_u"], 4),
+            round(a["prix_vente"], 2),
+            a["qte_totale"],
+            a["date_achat"],
+        )
+
+    # Extraire le numéro de séquence depuis la ref (AV-20260316-NNNN → NNNN)
+    import re as _re
+    def seq_ref(ref):
+        m = _re.search(r"-(\d+)$", ref)
+        return int(m.group(1)) if m else 0
+
+    groupes = []
+    traites = set()
+
+    for i, art in enumerate(articles):
+        if art["ref"] in traites:
+            continue
+        cle = cle_identite(art)
+        seq_i = seq_ref(art["ref"])
+
+        # Chercher tous les articles avec la même clé ET refs consécutives
+        groupe = [art]
+        traites.add(art["ref"])
+
+        for j, autre in enumerate(articles):
+            if autre["ref"] in traites:
+                continue
+            if cle_identite(autre) == cle:
+                seq_j = seq_ref(autre["ref"])
+                # Vérifier que la séquence est consécutive au groupe actuel
+                seqs_groupe = [seq_ref(a["ref"]) for a in groupe]
+                if seq_j == max(seqs_groupe) + 1 or seq_j == min(seqs_groupe) - 1:
+                    groupe.append(autre)
+                    traites.add(autre["ref"])
+
+        groupes.append({
+            "refs":       [a["ref"] for a in groupe],
+            "record_ids": [a["record_id"] for a in groupe],
+            "description": art["description"],
+            "prix_achat_u": art["prix_achat_u"],
+            "prix_vente":   art["prix_vente"],
+            "qte_totale":   art["qte_totale"],
+            "date_achat":   art["date_achat"],
+            "photos_urls":  next((a["photos_urls"] for a in groupe if a["photos_urls"]), ""),
+            "annonce":      next((a["annonce"] for a in groupe if a["annonce"]), ""),
+            "notes":        art["notes"],
+            "nb_photos":    art["nb_photos"],
+            "est_lot":      len(groupe) > 1,
+            "quantite_lot": len(groupe),
+        })
+
+    return groupes
+
+
+async def get_articles_prets_a_poster_v2() -> list:
+    """
+    Pour /post : articles statut 'acheté' avec TOUTES ces colonnes remplies :
+    Description, Prix achat unitaire, Quantite totale, Prix vente,
+    Date achat, Photos URLs, Nombre de photos, Annonce générée.
+    Notes est optionnel.
+    Regroupe également les lots identiques + consécutifs.
+    """
+    fields = [
+        "Référence gestion", "Description", "Prix achat unitaire",
+        "Quantite totale", "Prix vente", "Date achat", "Statut",
+        "Photos URLs", "Nombre de photos", "Annonce générée", "Notes",
+    ]
+    try:
+        async with httpx.AsyncClient(timeout=20) as http:
+            resp = await http.get(
+                f"{AIRTABLE_URL}/{TABLE_PRODUITS}",
+                headers=HEADERS,
+                params={
+                    "filterByFormula": (
+                        "AND({Statut}='acheté',"
+                        "{Description}!='',"
+                        "{Prix achat unitaire}!='',"
+                        "{Quantite totale}!='',"
+                        "{Prix vente}!='',"
+                        "{Date achat}!='',"
+                        "{Photos URLs}!='',"
+                        "{Nombre de photos}!='',"
+                        "{Annonce générée}!='')"
+                    ),
+                    "fields[]": fields,
+                    "maxRecords": 200,
+                    "sort[0][field]": "Référence gestion",
+                    "sort[0][direction]": "asc",
+                }
+            )
+        records = resp.json().get("records", [])
+    except Exception as e:
+        logger.error(f"get_articles_prets_a_poster_v2 error: {e}")
+        return []
+
+    articles = []
+    for r in records:
+        f = r["fields"]
+        articles.append({
+            "ref":         f.get("Référence gestion", "?"),
+            "record_id":   r["id"],
+            "description": f.get("Description", ""),
+            "prix_achat_u":float(f.get("Prix achat unitaire") or 0),
+            "qte_totale":  int(f.get("Quantite totale") or 1),
+            "prix_vente":  float(f.get("Prix vente") or 0),
+            "date_achat":  f.get("Date achat", ""),
+            "photos_urls": f.get("Photos URLs", ""),
+            "nb_photos":   f.get("Nombre de photos", 0),
+            "annonce":     f.get("Annonce générée", ""),
+            "notes":       f.get("Notes", ""),
+        })
+
+    # Même logique de regroupement par lots
+    def cle_id(a):
+        return (
+            a["description"].strip().lower(),
+            round(a["prix_achat_u"], 4),
+            round(a["prix_vente"], 2),
+            a["qte_totale"],
+            a["date_achat"],
+        )
+
+    import re as _re
+    def seq_ref(ref):
+        m = _re.search(r"-(\d+)$", ref)
+        return int(m.group(1)) if m else 0
+
+    groupes = []
+    traites = set()
+    for art in articles:
+        if art["ref"] in traites:
+            continue
+        cle = cle_id(art)
+        groupe = [art]
+        traites.add(art["ref"])
+        for autre in articles:
+            if autre["ref"] in traites:
+                continue
+            if cle_id(autre) == cle:
+                seqs = [seq_ref(a["ref"]) for a in groupe]
+                sj = seq_ref(autre["ref"])
+                if sj == max(seqs) + 1 or sj == min(seqs) - 1:
+                    groupe.append(autre)
+                    traites.add(autre["ref"])
+
+        groupes.append({
+            "refs":        [a["ref"] for a in groupe],
+            "record_ids":  [a["record_id"] for a in groupe],
+            "description": art["description"],
+            "prix_vente":  art["prix_vente"],
+            "qte_totale":  art["qte_totale"] * len(groupe),
+            "photos_urls": next((a["photos_urls"] for a in groupe if a["photos_urls"]), ""),
+            "annonce":     next((a["annonce"] for a in groupe if a["annonce"]), ""),
+            "notes":       art["notes"],
+            "est_lot":     len(groupe) > 1,
+            "quantite_lot": len(groupe),
+        })
+
+    return groupes
+
+
 def grouper_en_lots(articles: list) -> list:
     """
     Regroupe les articles en lots selon titre + annonce similaires.
