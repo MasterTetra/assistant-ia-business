@@ -1,8 +1,8 @@
 """
 MODULE RAPPORTS
 ──────────────────────────────────────────────────────────
-Rapports business hebdomadaires, mensuels, annuels.
-Données issues d'Airtable — colonnes réelles du projet.
+Rapports business : journalier, hebdomadaire, mensuel, annuel.
+Colonnes Airtable réelles. Nouveaux statuts v2.
 """
 import httpx
 import logging
@@ -21,7 +21,26 @@ FIELDS = [
     "Date achat", "Date vente",
 ]
 
+# ── Statuts v2 ──────────────────────────────────────────────────────────────
+# "acheté"                → acheté, pas encore mis en vente
+# "en ligne"              → publié sur une plateforme
+# "en cours d'expédition" → vendu, en conditionnement/acheminement
+# "livré"                 → livré, en attente confirmation acheteur
+# "vendu"                 → vente finalisée, sort de la gestion active
+# "en stockage"           → stockage client (location d'espace)
+# "en rénovation"         → en réparation, retiré ou à retirer des plateformes
+
+STATUTS_VENDUS    = ("vendu", "en cours d'expédition", "livré")
+STATUTS_ACTIFS    = ("acheté", "en ligne", "en cours d'expédition", "livré", "en stockage", "en rénovation")
+STATUTS_STOCK     = ("acheté", "en ligne", "en stockage", "en rénovation")
+
 FRAIS_DEFAUT = {"ebay": 0.13, "leboncoin": 0.0, "vinted": 0.05, "autre": 0.0}
+
+# TVA sur marge (Art. 297A CGI) — biens d'occasion achetés à des non-assujettis
+TVA_MARGE_TAUX = 20 / 120  # = 16.67% de la marge TTC
+
+# Charges sociales estimées (auto-entrepreneur marchandises) — à adapter
+CHARGES_SOCIALES_TAUX = 0.128  # 12.8% du CA HT
 
 
 async def _fetch_all_records() -> list:
@@ -35,6 +54,7 @@ async def _fetch_all_records() -> list:
                     params["offset"] = offset
                 resp = await http.get(f"{AIRTABLE_URL}/{TABLE_PRODUITS}", headers=HEADERS, params=params)
                 if resp.status_code != 200:
+                    logger.error(f"Airtable {resp.status_code}: {resp.text[:100]}")
                     break
                 data = resp.json()
                 records.extend(data.get("records", []))
@@ -42,17 +62,12 @@ async def _fetch_all_records() -> list:
                 if not offset:
                     break
     except Exception as e:
-        logger.error(f"Erreur fetch Airtable: {e}")
-    return records
+        logger.error(f"Fetch Airtable: {e}")
+    return [r.get("fields", {}) for r in records]
 
 
 def _prix_achat(f: dict) -> float:
-    """
-    Prix d'achat unitaire pour les calculs de marge.
-    Distingue :
-    - Article unique  : utilise Prix achat unitaire ou Prix achat total
-    - Lot             : utilise Prix achat unitaire (déjà calculé à l'archivage)
-    """
+    """Prix achat unitaire pour calcul de marge par article."""
     pu = f.get("Prix achat unitaire")
     if pu:
         return float(pu)
@@ -60,27 +75,15 @@ def _prix_achat(f: dict) -> float:
     qte = float(f.get("Quantite totale") or 1)
     return total / qte if qte else total
 
-def _prix_achat_total_fiche(f: dict) -> float:
-    """Prix d'achat total de la fiche entière (lot ou article unique)."""
-    total = f.get("Prix achat total")
-    if total:
-        return float(total)
-    pu = float(f.get("Prix achat unitaire") or 0)
-    qte = float(f.get("Quantite totale") or 1)
-    return pu * qte
 
 def _est_lot(f: dict) -> bool:
-    """Retourne True si la fiche représente un lot (quantité > 1)."""
     return float(f.get("Quantite totale") or 1) > 1
 
 
 def _capital_periode(liste: list) -> float:
     """
-    Calcule le capital réel investi pour une liste de fiches.
-    Groupe par description pour éviter le double-comptage des lots :
-    - 1 fiche lot principale (Prix achat total renseigné) + N copies unitaires (sans pa_total)
-    → On prend uniquement le pa_total de la fiche principale.
-    - Articles uniques (sans pa_total) → somme des pa_unitaire.
+    Capital réel — groupe par description pour éviter double-comptage des lots.
+    La fiche principale du lot porte Prix achat total ; les copies unitaires non.
     """
     groupes = {}
     for f in liste:
@@ -97,9 +100,9 @@ def _capital_periode(liste: list) -> float:
 
 
 def _frais_pf(f: dict) -> float:
-    frais = f.get("Frais plateforme")
-    if frais:
-        return float(frais)
+    x = f.get("Frais plateforme")
+    if x:
+        return float(x)
     pf = (f.get("Plateforme vente") or "").lower()
     pv = float(f.get("Prix vente") or 0)
     return pv * FRAIS_DEFAUT.get(pf, 0.0)
@@ -109,9 +112,24 @@ def _frais_tr(f: dict) -> float:
     return float(f.get("Frais transport") or 0)
 
 
-def _marge(f: dict) -> float:
-    pv = float(f.get("Prix vente") or 0)
-    return pv - _prix_achat(f) - _frais_pf(f) - _frais_tr(f)
+def _marge_brute(f: dict) -> float:
+    """Marge brute = Prix vente - Prix achat unitaire (hors frais)."""
+    return float(f.get("Prix vente") or 0) - _prix_achat(f)
+
+
+def _marge_nette(f: dict) -> float:
+    """Marge nette = Marge brute - Frais plateforme - Frais transport."""
+    return _marge_brute(f) - _frais_pf(f) - _frais_tr(f)
+
+
+def _tva_marge(marge_ttc: float) -> float:
+    """TVA sur marge (Art. 297A CGI). Ne s'applique que si marge > 0."""
+    return marge_ttc * TVA_MARGE_TAUX if marge_ttc > 0 else 0.0
+
+
+def _charges_sociales(ca: float) -> float:
+    """Cotisations sociales auto-entrepreneur marchandises (~12.8% CA)."""
+    return ca * CHARGES_SOCIALES_TAUX
 
 
 async def generate_report(periode: str = "semaine") -> str:
@@ -130,51 +148,78 @@ async def generate_report(periode: str = "semaine") -> str:
         label = f"ANNÉE {now.year}"
 
     debut_str = debut.strftime("%Y-%m-%d")
-    all_records = await _fetch_all_records()
-    fl = [r.get("fields", {}) for r in all_records]
+    fl = await _fetch_all_records()
 
     def date_ok(d): return bool(d) and d[:10] >= debut_str
 
-    achetes = [f for f in fl if date_ok(f.get("Date achat", ""))]
+    # ── ACHATS de la période ──────────────────────────────────────────────────
+    # Tous les articles achetés pendant la période, SAUF ceux finalisés (vendu)
+    achetes_periode = [
+        f for f in fl
+        if date_ok(f.get("Date achat", ""))
+        and f.get("Statut") not in ("vendu",)
+    ]
+    capital_investi = _capital_periode(achetes_periode)
 
-
-    vendus = [f for f in fl if f.get("Statut") in ("vendu", "expédié", "livré") and date_ok(f.get("Date vente", ""))]
-    en_ligne = [f for f in fl if f.get("Statut") == "en ligne"]
-    en_stock = [f for f in fl if f.get("Statut") in ("acheté", "en stockage", "en rénovation")]
-
-    ca = sum(float(f.get("Prix vente") or 0) for f in vendus)
-    cout = sum(_prix_achat(f) for f in vendus)
-    fp = sum(_frais_pf(f) for f in vendus)
-    ft = sum(_frais_tr(f) for f in vendus)
-    marge_brute = ca - cout
-    marge_nette = marge_brute - fp - ft
-    taux = (marge_nette / ca * 100) if ca > 0 else 0
-
-    plateformes: dict = {}
-    ca_pf: dict = {}
-    for f in vendus:
-        pf = f.get("Plateforme vente") or "Non renseigné"
-        plateformes[pf] = plateformes.get(pf, 0) + 1
-        ca_pf[pf] = ca_pf.get(pf, 0) + float(f.get("Prix vente") or 0)
-
+    # Sources
     sources: dict = {}
-    for f in achetes:
-        src = f.get("Source") or "Inconnu"
+    for f in achetes_periode:
+        src = f.get("Source") or "Non renseigné"
         sources[src] = sources.get(src, 0) + 1
 
-    meilleure = max(vendus, key=_marge, default=None)
-    capital_investi = _capital_periode(achetes)
-    capital_stock = _capital_periode(en_ligne + en_stock)
-    potentiel = sum(float(f.get("Prix vente") or 0) for f in en_ligne)
-    pot_marge = potentiel - _capital_periode(en_ligne)
+    # ── VENTES de la période ─────────────────────────────────────────────────
+    vendus = [
+        f for f in fl
+        if f.get("Statut") in STATUTS_VENDUS
+        and date_ok(f.get("Date vente", ""))
+    ]
+    nb_vendus = len(vendus)
+    ca = sum(float(f.get("Prix vente") or 0) for f in vendus)
+    cout_vendus = sum(_prix_achat(f) for f in vendus)
+    fp_total = sum(_frais_pf(f) for f in vendus)
+    ft_total = sum(_frais_tr(f) for f in vendus)
 
+    # ── MARGES ───────────────────────────────────────────────────────────────
+    mb_total = ca - cout_vendus                          # Marge brute HT
+    mn_avant_charges = mb_total - fp_total - ft_total   # Après frais directs
+    tva_total = _tva_marge(mn_avant_charges)            # TVA sur marge
+    charges = _charges_sociales(ca)                      # Charges sociales
+    mn_nette = mn_avant_charges - tva_total - charges   # Marge nette réelle
+    taux_mn = (mn_nette / ca * 100) if ca > 0 else 0
+
+    # ── PAR PLATEFORME ────────────────────────────────────────────────────────
+    pf_data: dict = {}
+    for f in vendus:
+        pf = f.get("Plateforme vente") or "Non renseigné"
+        pf_data.setdefault(pf, {"nb": 0, "ca": 0})
+        pf_data[pf]["nb"] += 1
+        pf_data[pf]["ca"] += float(f.get("Prix vente") or 0)
+
+    # ── STOCK PAR STATUT ─────────────────────────────────────────────────────
+    def nb_statut(s): return len([f for f in fl if f.get("Statut") == s])
+    def nb_statuts(ss): return len([f for f in fl if f.get("Statut") in ss])
+
+    s_achete     = nb_statut("acheté")
+    s_en_ligne   = nb_statut("en ligne")
+    s_expedition = nb_statut("en cours d'expédition")
+    s_livre      = nb_statut("livré")
+    s_stockage   = nb_statut("en stockage")
+    s_renovation = nb_statut("en rénovation")
+
+    capital_stock = _capital_periode([f for f in fl if f.get("Statut") in STATUTS_STOCK])
+    potentiel = sum(float(f.get("Prix vente") or 0) for f in fl if f.get("Statut") == "en ligne")
+    pot_marge = potentiel - _capital_periode([f for f in fl if f.get("Statut") == "en ligne"])
+
+    meilleure = max(vendus, key=_marge_nette, default=None)
+
+    # ── CONSTRUCTION DU RAPPORT ───────────────────────────────────────────────
     lines = [
         f"📊 *RAPPORT — {label}*",
         f"📅 {debut.strftime('%d/%m/%Y')} → {now.strftime('%d/%m/%Y')}",
         "",
         "━━━━━━━━━━━━━━━━━━━━━━",
         "🛒 *ACHATS*",
-        f"  • Objets achetés : *{len(achetes)}*",
+        f"  • Objets achetés (actifs) : *{len(achetes_periode)}*",
         f"  • Capital investi : *{capital_investi:.2f}€*",
     ]
     if sources:
@@ -185,86 +230,95 @@ async def generate_report(periode: str = "semaine") -> str:
         "",
         "━━━━━━━━━━━━━━━━━━━━━━",
         "✅ *VENTES*",
-        f"  • Objets vendus : *{len(vendus)}*",
+        f"  • Objets vendus : *{nb_vendus}*",
         f"  • Chiffre d'affaires : *{ca:.2f}€*",
-        f"  • Coût d'achat : -{cout:.2f}€",
-        f"  • Frais plateformes : -{fp:.2f}€",
-        f"  • Frais transport : -{ft:.2f}€",
+        f"  • Coût d'achat : -{cout_vendus:.2f}€",
+        f"  • Frais plateformes : -{fp_total:.2f}€",
+        f"  • Frais transport : -{ft_total:.2f}€",
     ]
-    if plateformes:
-        for pf, nb in sorted(plateformes.items(), key=lambda x: x[1], reverse=True)[:3]:
-            lines.append(f"  • {pf} : {nb} ventes — {ca_pf.get(pf, 0):.2f}€")
+    if pf_data:
+        for pf, d in sorted(pf_data.items(), key=lambda x: x[1]["ca"], reverse=True)[:3]:
+            lines.append(f"  • {pf} : {d['nb']} ventes — {d['ca']:.2f}€")
 
     lines += [
         "",
         "━━━━━━━━━━━━━━━━━━━━━━",
         "💰 *MARGES*",
-        f"  • Marge brute : *{marge_brute:.2f}€*",
-        f"  • Marge nette : *{marge_nette:.2f}€*",
-        f"  • Taux de marge : *{taux:.1f}%*",
+        f"  • Marge brute HT : *{mb_total:.2f}€*",
+        f"  • Marge après frais directs : *{mn_avant_charges:.2f}€*",
+        f"  • TVA sur marge (Art.297A) : -{tva_total:.2f}€",
+        f"  • Charges sociales (~12.8% CA) : -{charges:.2f}€",
+        f"  • *Marge nette réelle : {mn_nette:.2f}€ ({taux_mn:.1f}%)*",
     ]
     if meilleure:
         desc = (meilleure.get("Description") or "")[:30]
-        lines.append(f"  • Meilleure vente : {desc} (+{_marge(meilleure):.2f}€)")
+        lines.append(f"  • Meilleure vente : {desc} (+{_marge_nette(meilleure):.2f}€)")
 
     lines += [
         "",
         "━━━━━━━━━━━━━━━━━━━━━━",
         "📦 *STOCK ACTUEL*",
-        f"  • En ligne : *{len(en_ligne)}* articles",
-        f"  • En stock/rénovation : *{len(en_stock)}* articles",
-        f"  • Capital immobilisé : *{capital_stock:.2f}€*",
     ]
+    if s_achete:     lines.append(f"  🛒 Acheté (à mettre en ligne) : *{s_achete}*")
+    if s_en_ligne:   lines.append(f"  🟢 En ligne : *{s_en_ligne}*")
+    if s_expedition: lines.append(f"  📬 En cours d'expédition : *{s_expedition}*")
+    if s_livre:      lines.append(f"  📦 Livré (attente confirmation) : *{s_livre}*")
+    if s_stockage:   lines.append(f"  🏭 En stockage : *{s_stockage}*")
+    if s_renovation: lines.append(f"  🔧 En rénovation : *{s_renovation}*")
+    lines.append(f"  💰 Capital immobilisé : *{capital_stock:.2f}€*")
     if potentiel > 0:
-        lines.append(f"  • Potentiel ventes en ligne : *{potentiel:.2f}€* (+{pot_marge:.2f}€ marge)")
+        lines.append(f"  📈 Potentiel ventes en ligne : *{potentiel:.2f}€* (+{pot_marge:.2f}€ marge)")
 
-    if len(vendus) == 0:
+    if nb_vendus == 0:
         perf = "🔴 Aucune vente cette période"
-    elif taux >= 50:
+    elif taux_mn >= 40:
         perf = "🟢 Excellente performance !"
-    elif taux >= 30:
+    elif taux_mn >= 20:
         perf = "🟡 Bonne performance"
     else:
         perf = "🟠 Marge à améliorer"
     lines += ["", f"⚡ *Performance :* {perf}"]
+    lines.append(f"\n_⚠️ TVA et charges estimées — confirmer avec votre comptable_")
+
     return "\n".join(lines)
 
 
 async def generate_stock_report() -> str:
     """Rapport détaillé du stock par statut."""
-    all_records = await _fetch_all_records()
-    fl = [r.get("fields", {}) for r in all_records]
+    fl = await _fetch_all_records()
+    now = datetime.now()
 
-    statuts: dict = {}
-    for f in fl:
-        s = f.get("Statut") or "Inconnu"
-        statuts.setdefault(s, []).append(f)
+    def items(s): return [f for f in fl if f.get("Statut") == s]
 
-    ordre = ["acheté", "en stockage", "en rénovation", "en ligne", "vendu", "expédié", "livré"]
-    emojis = {"acheté": "🛒", "en stockage": "📦", "en rénovation": "🔧",
-               "en ligne": "🟢", "vendu": "✅", "expédié": "📬", "livré": "🏠"}
+    ordre = [
+        ("acheté",               "🛒", "Acheté (à mettre en ligne)"),
+        ("en ligne",             "🟢", "En ligne"),
+        ("en cours d'expédition","📬", "En cours d'expédition"),
+        ("livré",                "📦", "Livré (attente confirmation)"),
+        ("en stockage",          "🏭", "En stockage"),
+        ("en rénovation",        "🔧", "En rénovation"),
+    ]
 
     lines = [
         "📦 *ÉTAT DU STOCK*",
-        f"📅 {datetime.now().strftime('%d/%m/%Y %H:%M')}",
+        f"📅 {now.strftime('%d/%m/%Y %H:%M')}",
         "",
     ]
-    for s in ordre:
-        items = statuts.get(s, [])
-        if not items:
+    for statut, emoji, label in ordre:
+        lst = items(statut)
+        if not lst:
             continue
-        emoji = emojis.get(s, "•")
-        val = _capital_periode(items)
-        lines.append(f"{emoji} *{s.capitalize()}* : {len(items)} articles — {val:.2f}€")
-        if s == "en ligne":
+        val = _capital_periode(lst)
+        lines.append(f"{emoji} *{label}* : {len(lst)} articles — {val:.2f}€")
+        if statut == "en ligne":
             pf_c: dict = {}
-            for f in items:
+            for f in lst:
                 pf = f.get("Plateforme vente") or "?"
                 pf_c[pf] = pf_c.get(pf, 0) + 1
             for pf, nb in sorted(pf_c.items(), key=lambda x: x[1], reverse=True):
                 lines.append(f"   └ {pf} : {nb} articles")
 
-    actifs = [f for f in fl if f.get("Statut") not in ("vendu", "expédié", "livré")]
+    actifs = [f for f in fl if f.get("Statut") in STATUTS_STOCK]
     capital = _capital_periode(actifs)
-    lines += ["", f"📊 Capital actif immobilisé : *{capital:.2f}€*"]
+    lines += ["", f"💰 Capital actif immobilisé : *{capital:.2f}€*"]
     return "\n".join(lines)
