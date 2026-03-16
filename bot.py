@@ -657,7 +657,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("Groupe introuvable")
             return
         g = groupes[idx]
-        await query.edit_message_text(f"✨ Génération annonce pour *{g['description'][:40]}*...", parse_mode="Markdown")
+        await query.edit_message_text(
+            f"✨ Génération annonce pour *{g['description'][:40]}*...\n"
+            + (f"_S'appliquera aux {g['quantite_lot']} articles du lot_" if g["est_lot"] else ""),
+            parse_mode="Markdown"
+        )
         try:
             from modules.flux import generer_annonce_texte
             annonce_data = await generer_annonce_texte(
@@ -665,37 +669,111 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 prix_vente=g["prix_vente"],
                 notes=g.get("notes", ""),
             )
-            # Sauvegarder l'annonce sur le premier record du groupe
-            from modules.stock import update_annonce_airtable
-            for record_id in g["record_ids"]:
-                await update_annonce_airtable(record_id, annonce_data.get("annonce_brute", ""))
+            # Stocker EN SESSION uniquement — pas encore dans Airtable
+            groupes[idx]["annonce_draft"] = annonce_data  # données complètes
             groupes[idx]["annonce"] = annonce_data.get("annonce_brute", "")
             session["listing_groupes"] = groupes
-            session["listing_index"] = idx
-            await _afficher_annonce_avec_boutons(query.message, annonce_data, g["refs"][0])
+            session["listing_current_idx"] = idx
+            # Afficher avec boutons de modif + valider (lot)
+            await _afficher_annonce_groupe(query.message, session, idx)
         except Exception as e:
             await query.message.reply_text(f"⚠️ Erreur génération: {e}")
 
     elif data.startswith("listing_modifier|"):
         idx = int(data.split("|")[1])
         session = get_session(query.from_user.id)
+        session["listing_current_idx"] = idx
+        await _afficher_annonce_groupe(query.message, session, idx)
+
+    elif data.startswith("lmod_prix|"):
+        idx = int(data.split("|")[1])
+        session = get_session(query.from_user.id)
+        session["listing_current_idx"] = idx
+        session["mode"] = "lmod_attente_prix"
+        g = session.get("listing_groupes", [])[idx] if idx < len(session.get("listing_groupes", [])) else {}
+        lot_label = f" (s\'applique aux {g['quantite_lot']} articles)" if g.get("est_lot") else ""
+        await query.edit_message_text(
+            f"💶 *Nouveau prix de vente ?*{lot_label}\n"
+            f"Prix actuel : {g.get('prix_vente', '?')}€\n\n"
+            f"_Tape le nouveau prix (ex: `9.90`)_",
+            parse_mode="Markdown"
+        )
+
+    elif data.startswith("lmod_titre|"):
+        idx = int(data.split("|")[1])
+        session = get_session(query.from_user.id)
+        session["listing_current_idx"] = idx
+        session["mode"] = "lmod_attente_titre"
+        g = session.get("listing_groupes", [])[idx] if idx < len(session.get("listing_groupes", [])) else {}
+        lot_label = f" (s\'applique aux {g['quantite_lot']} articles)" if g.get("est_lot") else ""
+        annonce_draft = g.get("annonce_draft") or {}
+        titre_actuel = annonce_draft.get("titre") or g.get("description", "")[:60]
+        await query.edit_message_text(
+            f"✏️ *Nouveau titre ?*{lot_label}\n"
+            f"Titre actuel : `{titre_actuel}`\n\n"
+            f"_Tape le nouveau titre (max 60 caractères)_",
+            parse_mode="Markdown"
+        )
+
+    elif data.startswith("lmod_desc|"):
+        idx = int(data.split("|")[1])
+        session = get_session(query.from_user.id)
+        session["listing_current_idx"] = idx
+        session["mode"] = "lmod_attente_desc"
+        g = session.get("listing_groupes", [])[idx] if idx < len(session.get("listing_groupes", [])) else {}
+        lot_label = f" (s\'applique aux {g['quantite_lot']} articles)" if g.get("est_lot") else ""
+        await query.edit_message_text(
+            f"📝 *Nouvelle description ?*{lot_label}\n\n"
+            f"_Tape la nouvelle description_",
+            parse_mode="Markdown"
+        )
+
+    elif data.startswith("listing_valider_lot|"):
+        # Valider et sauvegarder l'annonce sur TOUS les articles du groupe
+        idx = int(data.split("|")[1])
+        session = get_session(query.from_user.id)
         groupes = session.get("listing_groupes", [])
-        if idx < len(groupes):
-            g = groupes[idx]
-            session["listing_current_idx"] = idx
-            session["listing_data"] = {"annonce_brute": g["annonce"]}
+        if idx >= len(groupes):
+            await query.edit_message_text("⚠️ Groupe introuvable.")
+            return
+        g = groupes[idx]
+        annonce_draft = g.get("annonce_draft") or {}
+        annonce_brute = g.get("annonce") or annonce_draft.get("annonce_brute", "")
+
+        if not annonce_brute:
+            await query.edit_message_text("⚠️ Pas d'annonce à sauvegarder. Génère d'abord l'annonce.")
+            return
+
+        await query.edit_message_text(
+            f"💾 Sauvegarde sur *{len(g['record_ids'])}* article(s)...",
+            parse_mode="Markdown"
+        )
+        try:
+            from modules.stock import update_annonce_airtable, update_prix_vente_lot
+            # Sauvegarder annonce sur tous les records
+            ok = 0
+            for record_id in g["record_ids"]:
+                if await update_annonce_airtable(record_id, annonce_brute):
+                    ok += 1
+            # Si prix modifié en session, l'appliquer à tous
+            nouveau_prix = annonce_draft.get("prix_revente") or g.get("prix_vente")
+            if nouveau_prix and nouveau_prix != g.get("prix_vente_original"):
+                await update_prix_vente_lot(g["record_ids"], float(nouveau_prix))
+
+            groupes[idx]["annonce"] = annonce_brute
+            session["listing_groupes"] = groupes
+
+            lot_label = f" (lot ×{g['quantite_lot']})" if g["est_lot"] else ""
             await query.message.reply_text(
-                g["annonce"][:4000] if g["annonce"] else "Pas d'annonce",
-                parse_mode=None
+                f"✅ *Annonce sauvegardée{lot_label}* — {ok}/{len(g['record_ids'])} articles mis à jour\n"
+                f"🔖 {g['refs'][0]}" + (f" → {g['refs'][-1]}" if g['est_lot'] else ""),
+                parse_mode="Markdown"
             )
-            from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
-            kb = IKM([
-                [IKB("💶 Modifier prix", callback_data=f"listing_mod_prix|{g['refs'][0]}")],
-                [IKB("✏️ Modifier titre", callback_data=f"listing_mod_titre|{g['refs'][0]}")],
-                [IKB("📝 Modifier description", callback_data=f"listing_mod_annonce|{g['refs'][0]}")],
-                [IKB("✅ Valider", callback_data=f"listing_valider|{g['refs'][0]}")],
-            ])
-            await query.message.reply_text("Que veux-tu modifier ?", reply_markup=kb)
+            # Passer au groupe suivant
+            session["listing_index"] = idx + 1
+            await _afficher_groupe_listing(query.message, session)
+        except Exception as e:
+            await query.message.reply_text(f"⚠️ Erreur sauvegarde: {e}")
 
     elif data.startswith("listing_valider|"):
         ref = data.split("|", 1)[1]
@@ -1173,6 +1251,49 @@ async def cmd_listing(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _afficher_groupe_listing(update.message, session)
 
 
+
+async def _afficher_annonce_groupe(msg, session: dict, idx: int):
+    """
+    Affiche l'annonce d'un groupe avec boutons de modification.
+    Toutes les modifications s'appliquent au groupe entier.
+    Valider → sauvegarde sur TOUS les record_ids du groupe.
+    """
+    from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
+
+    groupes = session.get("listing_groupes", [])
+    if idx >= len(groupes):
+        return
+    g = groupes[idx]
+    annonce = g.get("annonce", "")
+    est_lot = g["est_lot"]
+    lot_info = f"\n⚠️ _Toute modification s\'applique aux {g['quantite_lot']} articles du lot_" if est_lot else ""
+
+    header = (
+        f"📝 *Annonce {idx+1}/{len(groupes)}*" +
+        (f" — lot ×{g['quantite_lot']}" if est_lot else "") +
+        f"\n🔖 {g['refs'][0]}" +
+        (f" → {g['refs'][-1]}" if est_lot else "") +
+        lot_info + "\n\n"
+    )
+
+    # Afficher l'annonce (tronquée si trop longue)
+    if annonce:
+        texte_annonce = (annonce[:1500] + "...") if len(annonce) > 1500 else annonce
+        await msg.reply_text(header + texte_annonce, parse_mode="Markdown")
+    else:
+        await msg.reply_text(header + "_Pas encore d\'annonce générée_", parse_mode="Markdown")
+
+    # Boutons d'action — tous passent par idx du groupe
+    kb = IKM([
+        [IKB("💶 Modifier prix",       callback_data=f"lmod_prix|{idx}"),
+         IKB("✏️ Modifier titre",      callback_data=f"lmod_titre|{idx}")],
+        [IKB("📝 Modifier description", callback_data=f"lmod_desc|{idx}")],
+        [IKB("✅ Valider + Sauvegarder", callback_data=f"listing_valider_lot|{idx}")],
+        [IKB("⏭ Passer sans sauvegarder", callback_data=f"listing_suivant|{idx}")],
+    ])
+    await msg.reply_text("Que veux-tu faire ?", reply_markup=kb)
+
+
 async def _afficher_groupe_listing(msg, session: dict):
     """Affiche un groupe d'annonce avec ses boutons d'action."""
     from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
@@ -1429,6 +1550,83 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"_Ou tape `ok` pour utiliser l'estimation du bot ({prix_revente_estime}€)_",
             parse_mode="Markdown"
         )
+        return
+
+    # ── Modifications annonce lot ─────────────────────────────────────────────
+    if session.get("mode") == "lmod_attente_prix":
+        try:
+            nouveau_prix = float(text.strip().replace("€","").replace(",","."))
+            if nouveau_prix <= 0:
+                raise ValueError()
+        except ValueError:
+            await update.message.reply_text("⚠️ Prix invalide. Ex: `9.90`", parse_mode="Markdown")
+            return
+        idx = session.get("listing_current_idx", 0)
+        groupes = session.get("listing_groupes", [])
+        if idx < len(groupes):
+            groupes[idx]["prix_vente"] = nouveau_prix
+            if "annonce_draft" not in groupes[idx] or not groupes[idx]["annonce_draft"]:
+                groupes[idx]["annonce_draft"] = {}
+            groupes[idx]["annonce_draft"]["prix_revente"] = nouveau_prix
+            session["listing_groupes"] = groupes
+        session["mode"] = None
+        await update.message.reply_text(
+            f"✅ Prix mis à jour : *{nouveau_prix}€*\n_S\'appliquera à tout le lot à la validation_",
+            parse_mode="Markdown"
+        )
+        await _afficher_annonce_groupe(update.message, session, idx)
+        return
+
+    if session.get("mode") == "lmod_attente_titre":
+        nouveau_titre = text.strip()[:80]
+        idx = session.get("listing_current_idx", 0)
+        groupes = session.get("listing_groupes", [])
+        if idx < len(groupes):
+            if "annonce_draft" not in groupes[idx] or not groupes[idx]["annonce_draft"]:
+                groupes[idx]["annonce_draft"] = {}
+            groupes[idx]["annonce_draft"]["titre"] = nouveau_titre
+            # Mettre à jour aussi l'annonce brute
+            import re as _re
+            annonce = groupes[idx].get("annonce", "")
+            if "TITRE:" in annonce:
+                annonce = _re.sub(r"TITRE:.*", f"TITRE: {nouveau_titre}", annonce)
+            else:
+                annonce = f"TITRE: {nouveau_titre}\n" + annonce
+            groupes[idx]["annonce"] = annonce
+            session["listing_groupes"] = groupes
+        session["mode"] = None
+        await update.message.reply_text(
+            f"✅ Titre mis à jour : *{nouveau_titre}*\n_S\'appliquera à tout le lot à la validation_",
+            parse_mode="Markdown"
+        )
+        await _afficher_annonce_groupe(update.message, session, idx)
+        return
+
+    if session.get("mode") == "lmod_attente_desc":
+        nouvelle_desc = text.strip()
+        idx = session.get("listing_current_idx", 0)
+        groupes = session.get("listing_groupes", [])
+        if idx < len(groupes):
+            if "annonce_draft" not in groupes[idx] or not groupes[idx]["annonce_draft"]:
+                groupes[idx]["annonce_draft"] = {}
+            groupes[idx]["annonce_draft"]["description"] = nouvelle_desc
+            # Mettre à jour l'annonce brute
+            import re as _re
+            annonce = groupes[idx].get("annonce", "")
+            if "DESCRIPTION:" in annonce and "FIN_DESCRIPTION" in annonce:
+                annonce = _re.sub(
+                    r"DESCRIPTION:\n.*?FIN_DESCRIPTION",
+                    f"DESCRIPTION:\n{nouvelle_desc}\nFIN_DESCRIPTION",
+                    annonce, flags=_re.DOTALL
+                )
+            groupes[idx]["annonce"] = annonce
+            session["listing_groupes"] = groupes
+        session["mode"] = None
+        await update.message.reply_text(
+            "✅ Description mise à jour.\n_S\'appliquera à tout le lot à la validation_",
+            parse_mode="Markdown"
+        )
+        await _afficher_annonce_groupe(update.message, session, idx)
         return
 
     if session.get("mode") == "flux_attente_prix_vente":
