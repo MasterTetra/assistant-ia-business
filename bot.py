@@ -1859,43 +1859,50 @@ async def cmd_recherche(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     from modules.flux import recherche_texte, recherche_multiple, formater_recherche, formater_rapport_multiple
 
-    # Récupérer le texte : args de la commande OU lignes du message
-    if context.args:
-        texte_brut = " ".join(context.args)
-    elif update.message.text:
-        # Enlever la commande /recherche du début
-        texte_brut = update.message.text.replace("/recherche", "").strip()
-    else:
+    # Récupérer le texte brut du message
+    texte_complet = update.message.text or ""
+    # Enlever la commande (/recherche ou /search)
+    for cmd in ["/recherche", "/search"]:
+        if texte_complet.startswith(cmd):
+            texte_complet = texte_complet[len(cmd):].strip()
+            break
+
+    if not texte_complet:
         await update.message.reply_text(
             "🔍 *Recherche marché*\n\n"
-            "Envoie une ou plusieurs références :\n\n"
+            "*1 article :*\n"
             "`/recherche iPhone 14 Pro 256Go`\n\n"
-            "Ou plusieurs articles (séparés par virgule ou saut de ligne) :\n"
-            "`/recherche iPhone 14 Pro, Airpods Pro 2`\n\n"
-            "Le bot cherche sur eBay, LBC, Vinted et te renvoie :\n"
-            "  • Prix du marché + liens annonces\n"
-            "  • Prix d'achat max conseillé\n"
+            "*Plusieurs articles (une ligne par article) :*\n"
+            "`/recherche`\n"
+            "`tamagotchi bleu`\n"
+            "`display one piece 1ère édition française`\n"
+            "`lampe cesar baldaccini daum`\n\n"
+            "Le bot cherche sur eBay, LBC, Vinted et retourne :\n"
+            "  • Fourchette de prix réelle + liens annonces actives\n"
+            "  • Prix d\'achat max conseillé\n"
             "  • Score opportunité /10",
             parse_mode="Markdown"
         )
         return
 
-    if not texte_brut:
+    # Parser les requêtes — priorité aux sauts de ligne, puis virgules
+    if "\n" in texte_complet:
+        queries = [q.strip() for q in texte_complet.split("\n") if q.strip() and len(q.strip()) > 2]
+    elif "," in texte_complet:
+        queries = [q.strip() for q in texte_complet.split(",") if q.strip() and len(q.strip()) > 2]
+    elif ";" in texte_complet:
+        queries = [q.strip() for q in texte_complet.split(";") if q.strip() and len(q.strip()) > 2]
+    else:
+        queries = [texte_complet.strip()]
+
+    if not queries:
         await update.message.reply_text("⚠️ Précise au moins un article à rechercher.")
         return
 
-    # Découper en plusieurs requêtes si virgule ou saut de ligne
-    separateurs = ["\n", ",", ";"]
-    queries = [texte_brut]
-    for sep in separateurs:
-        if sep in texte_brut:
-            queries = [q.strip() for q in texte_brut.split(sep) if q.strip()]
-            break
-
-    # Limiter à 5 articles max par message
+    # Limiter à 5 articles max
     if len(queries) > 5:
         queries = queries[:5]
-        await update.message.reply_text("⚠️ Maximum 5 articles par recherche — je traite les 5 premiers.")
+        await update.message.reply_text(f"⚠️ Maximum 5 articles — je traite les 5 premiers.")
 
     nb = len(queries)
     thinking = await update.message.reply_text(
@@ -1910,23 +1917,33 @@ async def cmd_recherche(update: Update, context: ContextTypes.DEFAULT_TYPE):
             result = formater_recherche(data)
             await thinking.edit_text(result, parse_mode="Markdown", disable_web_page_preview=True)
         else:
+            liste = "\n".join(f"  {i+1}. {q}" for i, q in enumerate(queries))
             await thinking.edit_text(
-                f"🔍 Recherche {nb} articles en parallèle...\n"
-                f"  {chr(10).join(f'  • {q}' for q in queries)}",
+                f"🔍 Analyse de *{nb}* articles en cours...\n{liste}\n\n"
+                f"⏳ ~{nb*10}-{nb*20}s — une fiche par article",
                 parse_mode="Markdown"
             )
             results = await recherche_multiple(queries)
-            # Rapport consolidé
-            rapport = formater_rapport_multiple(results)
-            await thinking.edit_text(rapport, parse_mode="Markdown", disable_web_page_preview=True)
-            # Puis détail de chaque article
-            for data in results:
+            # Supprimer le message "en cours"
+            try:
+                await thinking.delete()
+            except Exception:
+                pass
+            # Une fiche séparée par article, dans l'ordre du score
+            for data in sorted(results, key=lambda x: x["score"], reverse=True):
                 detail = formater_recherche(data)
                 await update.message.reply_text(
                     detail,
                     parse_mode="Markdown",
                     disable_web_page_preview=True
                 )
+            # Résumé final compact
+            rapport = formater_rapport_multiple(results)
+            await update.message.reply_text(
+                rapport,
+                parse_mode="Markdown",
+                disable_web_page_preview=True
+            )
     except Exception as e:
         logger.error(f"Erreur recherche: {e}", exc_info=True)
         await thinking.edit_text(f"⚠️ Erreur lors de la recherche: {str(e)[:200]}")
