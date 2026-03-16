@@ -832,12 +832,14 @@ async def cmd_terminer_photos(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 async def cmd_stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    thinking = await update.message.reply_text("📦 Chargement...")
+    """📦 /stock — État détaillé du stock par statut."""
+    thinking = await update.message.reply_text("📦 Analyse du stock...")
     try:
-        result = await get_stock_summary()
+        from modules.reports import generate_stock_report
+        result = await generate_stock_report()
         await thinking.edit_text(result, parse_mode="Markdown")
     except Exception as e:
-        await thinking.edit_text(f"⚠️ Erreur: {e}")
+        await thinking.edit_text(f"⚠️ Erreur stock: {e}")
 
 async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -1846,33 +1848,57 @@ async def cmd_lot_annuler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_statut(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /statut REF-2026-0001 vendu eBay
-    Met à jour le statut d'un produit + plateforme si vendu
+    /statut                         → menu pour choisir article + statut
+    /statut AV-20260316-0001 vendu  → mise à jour directe
+    /statut AV-20260316-0001 vendu eBay → avec plateforme
     """
-    if len(context.args) < 2:
-        await update.message.reply_text(
-            "Usage : /statut [REF] [statut] [plateforme optionnelle]\n\n"
-            "Exemples :\n"
-            "/statut REF-2026-0001 vendu eBay\n"
-            "/statut REF-2026-0001 vendu Leboncoin\n"
-            "/statut REF-2026-0001 expedie\n"
-            "/statut REF-2026-0001 en ligne\n\n"
-            "Statuts disponibles :\n"
-            "achete, en stockage, en renovation, en ligne, vendu, expedie, livre"
-        )
+    from modules.stock import update_status
+
+    # ── Mode direct : /statut REF STATUT [PLATEFORME] ────────────────────────
+    if len(context.args) >= 2:
+        ref = context.args[0].upper()
+        new_status = context.args[1].lower()
+        # Gérer statuts multi-mots : "en cours" "en ligne" etc.
+        if len(context.args) >= 3:
+            # Distinguer statut multi-mots vs plateforme
+            statuts_multi = ["en ligne", "en cours", "en stockage", "en rénovation"]
+            two_words = f"{context.args[1].lower()} {context.args[2].lower()}"
+            if two_words in statuts_multi or two_words.startswith("en "):
+                new_status = two_words
+                plateforme = " ".join(context.args[3:]) if len(context.args) > 3 else ""
+            else:
+                plateforme = " ".join(context.args[2:])
+        else:
+            plateforme = ""
+
+        thinking = await update.message.reply_text(f"🔄 Mise à jour {ref}...")
+        try:
+            result = await update_status(ref, new_status, plateforme)
+            await thinking.edit_text(result, parse_mode="Markdown")
+        except Exception as e:
+            await thinking.edit_text(f"⚠️ Erreur: {e}")
         return
 
-    ref = context.args[0].upper()
-    new_status = context.args[1].lower()
-    plateforme = " ".join(context.args[2:]) if len(context.args) > 2 else ""
-
-    thinking = await update.message.reply_text(f"🔄 Mise à jour {ref}...")
-    try:
-        from modules.stock import update_status
-        result = await update_status(ref, new_status, plateforme)
-        await thinking.edit_text(result, parse_mode="Markdown")
-    except Exception as e:
-        await thinking.edit_text(f"⚠️ Erreur: {e}")
+    # ── Mode sans args : afficher aide avec exemples ──────────────────────────
+    texte = (
+        "🔄 *Mise à jour de statut*\n\n"
+        "*Usage :*\n"
+        "`/statut REF nouveau_statut [plateforme]`\n\n"
+        "*Statuts disponibles :*\n"
+        "  🛒 `acheté` — acheté, pas encore en vente\n"
+        "  🟢 `en ligne` — publié sur une plateforme\n"
+        "  📬 `expedition` — en cours d\'expédition\n"
+        "  📦 `livre` — livré, attente confirmation\n"
+        "  ✅ `vendu` — vente finalisée\n"
+        "  🏭 `stockage` — en stockage\n"
+        "  🔧 `renovation` — en rénovation\n\n"
+        "*Exemples :*\n"
+        "`/statut AV-20260316-0001 vendu eBay`\n"
+        "`/statut AV-20260316-0001 expedition`\n"
+        "`/statut AV-20260316-0001 livre`\n"
+        "`/statut AV-20260316-0001 en ligne`"
+    )
+    await update.message.reply_text(texte, parse_mode="Markdown")
 
 # ─── LANCEMENT COMPATIBLE TOUTES VERSIONS PYTHON ─────────
 def main():
