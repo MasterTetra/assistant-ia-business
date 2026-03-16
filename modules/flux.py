@@ -990,3 +990,49 @@ async def archiver(data: dict, ref: str, prix_achat_total: float, source: str,
     except Exception as e:
         logger.error(f"archiver error: {e}", exc_info=True)
         return []
+
+
+async def generer_annonce_texte(objet: str, prix_vente: float = 0, notes: str = "") -> dict:
+    """
+    Génère une annonce depuis le texte uniquement (sans photo).
+    Utilisé par /annonce pour les articles sans photo disponible.
+    """
+    prompt = PROMPT_ANNONCE.format(
+        objet=objet,
+        etat="occasion",
+        details=notes or "aucun",
+        market_context=f"Prix de vente prévu : {prix_vente}€"
+    )
+    r = await _retry(
+        client.messages.create,
+        model=CLAUDE_MODEL,
+        max_tokens=1000,
+        messages=[{"role": "user", "content": [{"type": "text", "text": prompt}]}]
+    )
+    raw = ""
+    for block in r.content:
+        if hasattr(block, "text") and block.text:
+            raw += block.text + "\n"
+
+    import re as _re
+    def _get_local(key):
+        m = _re.search(rf'^{key}\s*:\s*(.+)', raw, _re.IGNORECASE | _re.MULTILINE)
+        return m.group(1).strip() if m else ""
+
+    titre = _get_local("TITRE")
+    desc_m = _re.search(r'DESCRIPTION:\s*\n(.*?)FIN_DESCRIPTION', raw, _re.DOTALL)
+    description = desc_m.group(1).strip() if desc_m else raw[:500]
+    mots_cles = _get_local("MOTS_CLES")
+
+    annonce_brute = f"TITRE: {titre}\nDESCRIPTION:\n{description}\nFIN_DESCRIPTION\nMOTS_CLES: {mots_cles}"
+
+    return {
+        "objet": objet,
+        "titre": titre,
+        "description": description,
+        "mots_cles": mots_cles,
+        "prix_revente": prix_vente,
+        "annonce_brute": annonce_brute,
+        "annonces": [],
+        "score": 5.0,
+    }
