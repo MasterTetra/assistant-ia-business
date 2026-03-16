@@ -98,8 +98,8 @@ async def get_financial_summary() -> str:
     """Bilan financier complet toutes périodes confondues."""
     records = await _fetch_all()
 
-    vendus = [f for f in records if f.get("Statut") in ("vendu", "expédié", "livré")]
-    en_cours = [f for f in records if f.get("Statut") not in ("vendu", "expédié", "livré")]
+    vendus = [f for f in records if f.get("Statut") in ("vendu", "en cours d'expédition", "livré")]
+    en_cours = [f for f in records if f.get("Statut") not in ("vendu", "en cours d'expédition", "livré")]
     en_ligne = [f for f in records if f.get("Statut") == "en ligne"]
 
     # ── Résultats réalisés ────────────────────────────────────
@@ -192,10 +192,10 @@ async def get_realtime_dashboard() -> str:
     week_start = (now - timedelta(days=7)).strftime("%Y-%m-%d")
 
     vendus_jour = [f for f in records
-                   if f.get("Statut") in ("vendu", "expédié", "livré")
+                   if f.get("Statut") in ("vendu", "en cours d'expédition", "livré")
                    and (f.get("Date vente") or "")[:10] == today]
     vendus_semaine = [f for f in records
-                      if f.get("Statut") in ("vendu", "expédié", "livré")
+                      if f.get("Statut") in ("vendu", "en cours d'expédition", "livré")
                       and (f.get("Date vente") or "")[:10] >= week_start]
     en_ligne = [f for f in records if f.get("Statut") == "en ligne"]
     en_stock = [f for f in records if f.get("Statut") in ("acheté", "en stockage")]
