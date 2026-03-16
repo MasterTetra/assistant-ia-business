@@ -38,7 +38,7 @@ CATEGORIES_DEFAUT = {
     "sport": "888",         # Sport
     "jouet": "220",         # Jouets
     "accessoire": "169291", # Accessoires mode
-    "porte_cles": "2562",   # Porte-clés
+    "porte_cles": "169305",   # Porte-clés
     "auto": "9801",         # Accessoires auto
 }
 
