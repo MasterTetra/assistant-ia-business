@@ -305,6 +305,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "passer":
         await query.edit_message_text("✅ OK, on passe !")
 
+    elif data.startswith("rapport_"):
+        periode = data.replace("rapport_", "")  # jour / semaine / mois / annee
+        await _generer_rapport(query, periode)
+
     elif data.startswith("gen_annonce|"):
         ref = data.split("|", 1)[1]
         thinking = await query.message.reply_text(f"📝 Génération annonce {ref}...")
@@ -1021,14 +1025,47 @@ async def _lancer_listing_article(msg, session, ref: str):
     )
 
 async def cmd_rapport(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    arg = (context.args[0].lower() if context.args else "semaine")
-    if arg in ("mensuel", "mois"):
-        periode = "mois"
-    elif arg in ("annuel", "annee", "année"):
-        periode = "annee"
+    """
+    /rapport → affiche un menu de sélection de période.
+    /rapport [jour|semaine|mois|annuel] → génère directement.
+    """
+    # Si argument direct → générer directement
+    if context.args:
+        arg = context.args[0].lower()
+        if arg in ("jour", "journalier", "today"):
+            periode = "jour"
+        elif arg in ("mensuel", "mois", "month"):
+            periode = "mois"
+        elif arg in ("annuel", "annee", "année", "year"):
+            periode = "annee"
+        else:
+            periode = "semaine"
+        await _generer_rapport(update, periode)
+        return
+
+    # Sinon → menu de sélection
+    from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
+    kb = IKM([
+        [IKB("📅 Rapport Journalier",   callback_data="rapport_jour")],
+        [IKB("📊 Rapport Hebdomadaire", callback_data="rapport_semaine")],
+        [IKB("📆 Rapport Mensuel",      callback_data="rapport_mois")],
+        [IKB("🗓️ Rapport Annuel",       callback_data="rapport_annee")],
+    ])
+    await update.message.reply_text(
+        "📊 *Quel rapport veux-tu générer ?*",
+        parse_mode="Markdown",
+        reply_markup=kb
+    )
+
+
+async def _generer_rapport(update_or_query, periode: str):
+    """Génère et envoie le rapport pour la période donnée."""
+    # Supporte à la fois Message et CallbackQuery
+    is_callback = hasattr(update_or_query, 'edit_message_text')
+    if is_callback:
+        thinking = await update_or_query.edit_message_text(f"📊 Génération rapport {periode}...")
     else:
-        periode = "semaine"
-    thinking = await update.message.reply_text(f"📊 Génération rapport {periode}...")
+        thinking = await update_or_query.message.reply_text(f"📊 Génération rapport {periode}...")
     try:
         from modules.reports import generate_report
         result = await generate_report(periode)
