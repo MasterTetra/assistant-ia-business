@@ -31,13 +31,15 @@ EBAY_HEADERS = {
 
 # Catégories eBay France fréquentes (à affiner selon les articles)
 CATEGORIES_DEFAUT = {
-    "default": "99",        # Divers
+    "default": "625",       # Objets de collection > Divers
     "vetement": "11450",    # Vêtements
     "electronique": "293",  # Électronique
     "maison": "11700",      # Maison
     "sport": "888",         # Sport
     "jouet": "220",         # Jouets
     "accessoire": "169291", # Accessoires mode
+    "porte_cles": "2562",   # Porte-clés
+    "auto": "9801",         # Accessoires auto
 }
 
 # Frais eBay selon prix de vente
@@ -156,7 +158,7 @@ def _detect_categorie(titre: str, description: str) -> str:
     """Détecte automatiquement la catégorie eBay selon le contenu."""
     texte = (titre + " " + description).lower()
     if any(w in texte for w in ["porte-clé", "porte-cle", "porte clé", "keychain", "keyring"]):
-        return CATEGORIES_DEFAUT["porte-cles"]
+        return CATEGORIES_DEFAUT["porte_cles"]
     if any(w in texte for w in ["t-shirt", "veste", "pantalon", "robe", "chaussure", "vêtement"]):
         return CATEGORIES_DEFAUT["vetement"]
     if any(w in texte for w in ["casquette", "bonnet", "chapeau"]):
