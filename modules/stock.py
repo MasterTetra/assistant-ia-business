@@ -881,3 +881,21 @@ def grouper_en_lots(articles: list) -> list:
             lots[cle]["photos"] = art["photos_urls"]
 
     return list(lots.values())
+
+
+async def update_prix_vente_lot(record_ids: list, prix_vente: float) -> int:
+    """Met à jour le Prix vente sur une liste de records Airtable. Retourne le nb de succès."""
+    ok = 0
+    try:
+        async with httpx.AsyncClient(timeout=30) as http:
+            for rid in record_ids:
+                resp = await http.patch(
+                    f"{AIRTABLE_URL}/{TABLE_PRODUITS}/{rid}",
+                    headers=HEADERS,
+                    json={"fields": {"Prix vente": prix_vente}}
+                )
+                if resp.status_code == 200:
+                    ok += 1
+    except Exception as e:
+        logger.error(f"update_prix_vente_lot error: {e}")
+    return ok
