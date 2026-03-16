@@ -225,47 +225,49 @@ async def publier_sur_ebay(
     titre_safe = echapper_xml(_nettoyer(titre)[:80])
     desc_safe = echapper_xml(_nettoyer(description))
 
-    # Durée de l'annonce (GTC = Good Till Cancelled)
-    xml_body = f"""
-  <Item>
-    <Title>{titre_safe}</Title>
-    <Description>{desc_safe}</Description>
-    <PrimaryCategory><CategoryID>{categorie}</CategoryID></PrimaryCategory>
-    <StartPrice currencyID="EUR">{prix:.2f}</StartPrice>
-    <ConditionID>{condition_id}</ConditionID>
-    <Country>FR</Country>
-    <Currency>EUR</Currency>
-    <DispatchTimeMax>3</DispatchTimeMax>
-    <ListingDuration>GTC</ListingDuration>
-    <ListingType>FixedPriceItem</ListingType>
-    <Quantity>{quantite}</Quantity>
-    <ReturnPolicy>
-      <ReturnsAcceptedOption>ReturnsAccepted</ReturnsAcceptedOption>
-      <RefundOption>MoneyBack</RefundOption>
-      <ReturnsWithinOption>Days_30</ReturnsWithinOption>
-      <ShippingCostPaidByOption>Buyer</ShippingCostPaidByOption>
-    </ReturnPolicy>
-    <ShippingDetails>
-      <ShippingType>Flat</ShippingType>
-      <ShippingServiceOptions>
-        <ShippingServicePriority>1</ShippingServicePriority>
-        <ShippingService>FR_Chronopost</ShippingService>
-        <ShippingServiceCost currencyID="EUR">0.00</ShippingServiceCost>
-        <ShippingServiceAdditionalCost currencyID="EUR">0.00</ShippingServiceAdditionalCost>
-        <FreeShipping>true</FreeShipping>
-      </ShippingServiceOptions>
-      <ShippingServiceOptions>
-        <ShippingServicePriority>2</ShippingServicePriority>
-        <ShippingService>FR_Other</ShippingService>
-        <ShippingServiceCost currencyID="EUR">0.00</ShippingServiceCost>
-        <ShippingServiceAdditionalCost currencyID="EUR">0.00</ShippingServiceAdditionalCost>
-      </ShippingServiceOptions>
-    </ShippingDetails>
-    <ShipToLocations>FR</ShipToLocations>
-    <ShipToLocations>Worldwide</ShipToLocations>
-    {photos_xml}
-  </Item>
-"""
+    # Construction XML par concaténation — évite les problèmes de f-string multiligne
+    parts = []
+    parts.append("<Item>")
+    parts.append(f"<Title>{titre_safe}</Title>")
+    parts.append(f"<Description>{desc_safe}</Description>")
+    parts.append(f"<PrimaryCategory><CategoryID>{categorie}</CategoryID></PrimaryCategory>")
+    parts.append(f'<StartPrice currencyID="EUR">{prix:.2f}</StartPrice>')
+    parts.append(f"<ConditionID>{condition_id}</ConditionID>")
+    parts.append("<Country>FR</Country>")
+    parts.append("<Currency>EUR</Currency>")
+    parts.append("<DispatchTimeMax>3</DispatchTimeMax>")
+    parts.append("<ListingDuration>GTC</ListingDuration>")
+    parts.append("<ListingType>FixedPriceItem</ListingType>")
+    parts.append(f"<Quantity>{quantite}</Quantity>")
+    parts.append("<ReturnPolicy>")
+    parts.append("<ReturnsAcceptedOption>ReturnsAccepted</ReturnsAcceptedOption>")
+    parts.append("<RefundOption>MoneyBack</RefundOption>")
+    parts.append("<ReturnsWithinOption>Days_30</ReturnsWithinOption>")
+    parts.append("<ShippingCostPaidByOption>Buyer</ShippingCostPaidByOption>")
+    parts.append("</ReturnPolicy>")
+    parts.append("<ShippingDetails>")
+    parts.append("<ShippingType>Flat</ShippingType>")
+    parts.append("<ShippingServiceOptions>")
+    parts.append("<ShippingServicePriority>1</ShippingServicePriority>")
+    parts.append("<ShippingService>FR_Chronopost</ShippingService>")
+    parts.append('<ShippingServiceCost currencyID="EUR">0.00</ShippingServiceCost>')
+    parts.append('<ShippingServiceAdditionalCost currencyID="EUR">0.00</ShippingServiceAdditionalCost>')
+    parts.append("<FreeShipping>true</FreeShipping>")
+    parts.append("</ShippingServiceOptions>")
+    parts.append("</ShippingDetails>")
+    parts.append("<ShipToLocations>FR</ShipToLocations>")
+    if photos_xml:
+        parts.append(photos_xml)
+    parts.append("</Item>")
+    xml_body = "".join(parts)
+
+    # Validation XML locale avant envoi
+    try:
+        ET.fromstring(f"<root>{xml_body}</root>")
+        logger.info("✅ XML validé localement")
+    except ET.ParseError as xml_err:
+        logger.error(f"❌ XML INVALIDE localement: {xml_err}")
+        return {"success": False, "item_id": "", "url": "", "error": f"XML invalide: {xml_err}"}
 
     try:
         logger.info(f"📤 XML COMPLET envoyé à eBay:\n{xml_body}")
