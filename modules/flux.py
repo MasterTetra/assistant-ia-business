@@ -86,12 +86,19 @@ MOTS_CLES: [15 mots-cles separes par virgules]"""
 
 
 async def _retry(func, *args, **kwargs):
-    for attempt in range(4):
+    """Retry avec backoff exponentiel — gère 429 (rate limit) ET 529 (overloaded)."""
+    max_attempts = 6
+    for attempt in range(max_attempts):
         try:
             return func(*args, **kwargs)
         except Exception as e:
-            if "429" in str(e) and attempt < 3:
-                await asyncio.sleep(15 * (attempt + 1))
+            err = str(e)
+            is_429 = "429" in err
+            is_529 = "529" in err or "overloaded" in err.lower()
+            if (is_429 or is_529) and attempt < max_attempts - 1:
+                wait = (2 ** attempt) * 5  # 5s, 10s, 20s, 40s, 80s
+                logger.info(f"API {'surchargée' if is_529 else 'rate limit'} — retry {attempt+1}/{max_attempts-1} dans {wait}s")
+                await asyncio.sleep(wait)
             else:
                 raise
 
@@ -421,6 +428,22 @@ async def recherche_texte(query: str) -> dict:
         logger.warning(f"Recherche texte failed [{query}]: {e}")
         raw = ""
 
+    # Si échec total : retourner un dict d'erreur explicite
+    if not raw and search_error:
+        err_msg = {
+            "surcharge": "⏳ API surchargée — réessaie dans 1-2 minutes",
+            "rate_limit": "⏳ Trop de requêtes — réessaie dans 1 minute",
+            "erreur": "⚠️ Erreur technique lors de la recherche",
+        }.get(search_error, "⚠️ Recherche échouée")
+        return {
+            "query": query, "objet": query, "erreur": err_msg,
+            "annonces": [], "nb_annonces": "0", "nb_vendus": "0",
+            "prix_bas": 0, "prix_moyen": 0, "prix_haut": 0,
+            "prix_revente": 0, "achat_max": 0, "achat_max_net": 0,
+            "mult": 3, "label": "x3", "demande": "?", "vitesse": "?",
+            "raison": err_msg, "conseil": "", "score": 0, "raw": "",
+        }
+
     # Parser le résultat
     objet_id  = _get(raw, "OBJET") or query
     prix_bas  = _num(raw, "PRIX_BAS")
@@ -536,6 +559,15 @@ def _annonces_avec_liens(text: str) -> list:
 
 def formater_recherche(data: dict) -> str:
     """Formate le résultat d'une recherche texte pour Telegram."""
+    # Cas d'erreur
+    if data.get("erreur"):
+        return (
+            f"🔍 *{data['query']}*\n"
+            f"{'─'*30}\n"
+            f"{data['erreur']}\n\n"
+            f"_Utilise /recherche {data['query']} pour réessayer_"
+        )
+
     score = data["score"]
     score_emoji = "🟢" if score >= 7 else ("🟡" if score >= 5 else "🔴")
 
