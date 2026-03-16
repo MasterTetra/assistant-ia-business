@@ -507,9 +507,10 @@ async def publier_sur_ebay(
         return {"success": False, "item_id": "", "url": "", "error": f"XML invalide: {xml_err}"}
 
     try:
-        logger.info(f"📤 XML COMPLET envoyé à eBay:\n{xml_body}")
+        logger.info(f"📤 Titre: {titre_safe} | Cat: {categorie} | CondID: {supporte_condition}")
+        logger.info(f"📤 Description (300 chars): {desc_safe[:300]}")
         resp_xml = await _ebay_call_async("AddFixedPriceItem", xml_body)
-        logger.info(f"eBay AddFixedPriceItem réponse: {resp_xml[:500]}")
+        logger.info(f"eBay AddFixedPriceItem réponse: {resp_xml[:2000]}")
         root = _parse_xml(resp_xml)
         ack = _get_xml_val(root, "Ack")
         item_id = _get_xml_val(root, "ItemID")
