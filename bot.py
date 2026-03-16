@@ -244,6 +244,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from modules.flux import analyser_marche_rapide, analyser_marche, formater_analyse
         data = await analyser_marche_rapide(file_url, caption)
         session["flux_data"] = data
+        session["flux_data_rapide"] = data.copy()  # Copie immuable pour ACHETER
 
         await thinking_msg.delete()
 
@@ -615,6 +616,87 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
+    elif data == "listing_terminer":
+        session = get_session(query.from_user.id)
+        session["mode"] = None
+        await query.edit_message_text(
+            "✅ Navigation terminée.\nLance `/post` pour publier sur eBay.",
+            parse_mode="Markdown"
+        )
+
+    elif data.startswith("listing_voir|"):
+        idx = int(data.split("|")[1])
+        session = get_session(query.from_user.id)
+        groupes = session.get("listing_groupes", [])
+        if idx < len(groupes):
+            g = groupes[idx]
+            await query.message.reply_text(
+                g["annonce"][:4000] if g["annonce"] else "⚠️ Pas d'annonce générée.",
+                parse_mode=None
+            )
+
+    elif data.startswith("listing_suivant|"):
+        idx = int(data.split("|")[1])
+        session = get_session(query.from_user.id)
+        session["listing_index"] = idx + 1
+        await query.edit_message_text("➡️ Groupe suivant...")
+        await _afficher_groupe_listing(query.message, session)
+
+    elif data.startswith("listing_precedent|"):
+        idx = int(data.split("|")[1])
+        session = get_session(query.from_user.id)
+        session["listing_index"] = max(0, idx - 1)
+        await query.edit_message_text("⬅️ Groupe précédent...")
+        await _afficher_groupe_listing(query.message, session)
+
+    elif data.startswith("listing_generer|"):
+        idx = int(data.split("|")[1])
+        session = get_session(query.from_user.id)
+        groupes = session.get("listing_groupes", [])
+        if idx >= len(groupes):
+            await query.answer("Groupe introuvable")
+            return
+        g = groupes[idx]
+        await query.edit_message_text(f"✨ Génération annonce pour *{g['description'][:40]}*...", parse_mode="Markdown")
+        try:
+            from modules.flux import generer_annonce_texte
+            annonce_data = await generer_annonce_texte(
+                objet=g["description"],
+                prix_vente=g["prix_vente"],
+                notes=g.get("notes", ""),
+            )
+            # Sauvegarder l'annonce sur le premier record du groupe
+            from modules.stock import update_annonce_airtable
+            for record_id in g["record_ids"]:
+                await update_annonce_airtable(record_id, annonce_data.get("annonce_brute", ""))
+            groupes[idx]["annonce"] = annonce_data.get("annonce_brute", "")
+            session["listing_groupes"] = groupes
+            session["listing_index"] = idx
+            await _afficher_annonce_avec_boutons(query.message, annonce_data, g["refs"][0])
+        except Exception as e:
+            await query.message.reply_text(f"⚠️ Erreur génération: {e}")
+
+    elif data.startswith("listing_modifier|"):
+        idx = int(data.split("|")[1])
+        session = get_session(query.from_user.id)
+        groupes = session.get("listing_groupes", [])
+        if idx < len(groupes):
+            g = groupes[idx]
+            session["listing_current_idx"] = idx
+            session["listing_data"] = {"annonce_brute": g["annonce"]}
+            await query.message.reply_text(
+                g["annonce"][:4000] if g["annonce"] else "Pas d'annonce",
+                parse_mode=None
+            )
+            from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
+            kb = IKM([
+                [IKB("💶 Modifier prix", callback_data=f"listing_mod_prix|{g['refs'][0]}")],
+                [IKB("✏️ Modifier titre", callback_data=f"listing_mod_titre|{g['refs'][0]}")],
+                [IKB("📝 Modifier description", callback_data=f"listing_mod_annonce|{g['refs'][0]}")],
+                [IKB("✅ Valider", callback_data=f"listing_valider|{g['refs'][0]}")],
+            ])
+            await query.message.reply_text("Que veux-tu modifier ?", reply_markup=kb)
+
     elif data.startswith("listing_valider|"):
         ref = data.split("|", 1)[1]
         session["mode"] = None
@@ -763,10 +845,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "flux_acheter":
         session = get_session(query.from_user.id)
-        data_flux = session.get("flux_data")
-        if not data_flux:
+        # Priorité à la copie immuable de la phase 1 (évite conflit avec enrichissement web)
+        data_flux = session.get("flux_data_rapide") or session.get("flux_data")
+        if not data_flux or not isinstance(data_flux, dict):
             await query.edit_message_text("⚠️ Session expirée. Renvoie une photo.")
             return
+        # Remettre flux_data sur la copie fiable
+        session["flux_data"] = data_flux
         session["mode"] = "flux_attente_prix_achat"
         achat_max = data_flux.get("achat_max", 0)
         await query.edit_message_text(
@@ -956,17 +1041,21 @@ async def cmd_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session = get_session(update.effective_user.id)
     thinking = await update.message.reply_text("🔍 Analyse du stock en attente...")
 
-    from modules.stock import get_articles_prets_a_poster, grouper_en_lots
-    articles = await get_articles_prets_a_poster()
+    from modules.stock import get_articles_prets_a_poster_v2
+    articles_groupes = await get_articles_prets_a_poster_v2()
+    articles = articles_groupes  # groupes prêts à poster
 
     if not articles:
         await thinking.edit_text(
-            "✅ Aucun article prêt à poster.\n"
-            "Vérifie que le statut est 'acheté' ET que les Photos URLs sont renseignées dans Airtable."
+            "✅ Aucun article prêt à poster.\n\n"
+            "_Pour qu'un article soit publiable, il faut que ces colonnes soient remplies dans Airtable :_\n"
+            "Description, Prix achat unitaire, Quantite totale, Prix vente, Date achat, "
+            "Photos URLs, Nombre de photos, Annonce générée.",
+            parse_mode="Markdown"
         )
         return
 
-    lots = grouper_en_lots(articles)
+    lots = articles  # groupes déjà formés par get_articles_prets_a_poster_v2
     session["post_lots"] = lots
     session["post_lots_confirmes"] = []
 
@@ -1037,61 +1126,104 @@ async def _publier_lot(lot: dict, app) -> dict:
 
 async def cmd_listing(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /listing          → liste tous les articles avec statut 'acheté'
-    /listing REF      → génère l'annonce pour cette référence
-    /listing REF1 REF2 REF3 → génère annonces pour plusieurs références
+    /annonce (alias /listing) :
+    - Récupère tous les articles statut 'acheté'
+    - Détecte automatiquement les lots (données identiques + refs consécutives)
+    - Propose de générer/modifier l'annonce pour chaque groupe
+    - 1 groupe = 1 annonce (même si lot de 60 articles identiques)
     """
-    session = get_session(update.effective_user.id)
+    from modules.stock import get_articles_pour_annonce
 
-    # ── Sans argument : afficher la liste des articles achetés ──
-    if not context.args:
-        thinking = await update.message.reply_text("📋 Chargement des articles à lister...")
-        try:
-            from modules.stock import get_produits_achetes
-            produits = await get_produits_achetes()
-            if not produits:
-                await thinking.edit_text(
-                    "✅ Aucun article en attente de listing.\n"
-                    "Tous les achats ont déjà une annonce."
-                )
-                return
+    thinking = await update.message.reply_text("🔍 Analyse des articles à annoncer...")
 
-            lines = ["📋 ARTICLES À LISTER\n━━━━━━━━━━━━━━━━━━━━"]
-            for p in produits:
-                lines.append(
-                    f"🔖 {p['ref']}\n"
-                    f"   {p['description'][:40]}\n"
-                    f"   Achat: {p['prix_achat']}€ → Revente: {p['prix_vente']}€"
-                )
-            lines.append("━━━━━━━━━━━━━━━━━━━━")
-            lines.append("Tape /listing REF pour une annonce")
-            lines.append("Tape /listing REF1 REF2 REF3 pour plusieurs")
+    groupes = await get_articles_pour_annonce()
 
-            # Boutons pour sélection rapide (max 10)
-            from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
-            buttons = []
-            for p in produits[:10]:
-                buttons.append([IKB(
-                    f"{p['ref']} — {p['description'][:25]}",
-                    callback_data=f"listing_select|{p['ref']}"
-                )])
-            # Bouton "Tout lister"
-            if len(produits) > 1:
-                all_refs = " ".join(p["ref"] for p in produits[:10])
-                buttons.append([IKB(f"📦 Tout lister ({len(produits)} articles)", callback_data=f"listing_all|{all_refs}")])
-
-            await thinking.edit_text("\n".join(lines), reply_markup=IKM(buttons))
-        except Exception as e:
-            await thinking.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
+    if not groupes:
+        await thinking.edit_text(
+            "✅ Aucun article avec statut *acheté* à annoncer.\n\n"
+            "_Les articles doivent avoir le statut_ `acheté` _dans Airtable._",
+            parse_mode="Markdown"
+        )
         return
 
-    # ── Avec argument(s) : générer les annonces ──
-    refs = [r.upper() for r in context.args]
-    session["listing_queue"] = refs
-    session["listing_queue_index"] = 0
+    # Séparer : annonce déjà générée vs à créer
+    sans_annonce = [g for g in groupes if not g["annonce"]]
+    avec_annonce = [g for g in groupes if g["annonce"]]
 
-    # Lancer le premier article
-    await _lancer_listing_article(update.message, session, refs[0])
+    nb_total = len(groupes)
+    nb_articles = sum(g["quantite_lot"] for g in groupes)
+
+    résumé = (
+        f"📝 *{nb_total} annonce(s) à traiter* ({nb_articles} articles)\n\n"
+    )
+    if avec_annonce:
+        résumé += f"✅ {len(avec_annonce)} annonce(s) déjà générée(s)\n"
+    if sans_annonce:
+        résumé += f"⬜ {len(sans_annonce)} annonce(s) à créer\n"
+
+    await thinking.edit_text(résumé, parse_mode="Markdown")
+
+    # Stocker dans session pour navigation
+    session = get_session(update.effective_user.id)
+    session["listing_groupes"] = groupes
+    session["listing_index"] = 0
+    session["mode"] = "listing_navigation"
+
+    # Afficher le premier groupe
+    await _afficher_groupe_listing(update.message, session)
+
+
+async def _afficher_groupe_listing(msg, session: dict):
+    """Affiche un groupe d'annonce avec ses boutons d'action."""
+    from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
+    groupes = session.get("listing_groupes", [])
+    idx = session.get("listing_index", 0)
+
+    if idx >= len(groupes):
+        await msg.reply_text(
+            "✅ Tous les groupes ont été traités !\n"
+            "Lance `/post` quand tu es prêt à publier.",
+            parse_mode="Markdown"
+        )
+        session["mode"] = None
+        return
+
+    g = groupes[idx]
+    nb_total = len(groupes)
+    est_lot = g["est_lot"]
+    lot_label = f" (lot ×{g['quantite_lot']})" if est_lot else ""
+    refs_label = g["refs"][0] + (f" → {g['refs'][-1]}" if est_lot else "")
+
+    header = (
+        f"📝 *Annonce {idx+1}/{nb_total}{lot_label}*\n"
+        f"🔖 {refs_label}\n"
+        f"📦 {g['description'][:60]}\n"
+        f"💶 Prix vente : {g['prix_vente']}€\n"
+    )
+    if est_lot:
+        header += f"📊 Lot de {g['quantite_lot']} articles identiques — 1 seule annonce créée\n"
+    if g["annonce"]:
+        header += "\n✅ Annonce déjà générée"
+    else:
+        header += "\n⬜ Annonce à créer"
+
+    kb_rows = []
+    if g["annonce"]:
+        kb_rows.append([IKB("👁 Voir l'annonce", callback_data=f"listing_voir|{idx}")])
+        kb_rows.append([
+            IKB("✏️ Modifier", callback_data=f"listing_modifier|{idx}"),
+            IKB("✅ OK → Suivant", callback_data=f"listing_suivant|{idx}"),
+        ])
+    else:
+        kb_rows.append([IKB("✨ Générer l'annonce", callback_data=f"listing_generer|{idx}")])
+        kb_rows.append([IKB("⏭ Passer", callback_data=f"listing_suivant|{idx}")])
+
+    if idx > 0:
+        kb_rows.append([IKB("⬅ Précédent", callback_data=f"listing_precedent|{idx}")])
+    kb_rows.append([IKB("🚀 Tout est OK → /post", callback_data="listing_terminer")])
+
+    from telegram import InlineKeyboardMarkup as IKM
+    await msg.reply_text(header, parse_mode="Markdown", reply_markup=IKM(kb_rows))
 
 
 async def _lancer_listing_article(msg, session, ref: str):
