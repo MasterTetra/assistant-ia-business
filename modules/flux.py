@@ -238,27 +238,54 @@ async def analyser_marche(photo_url: str, caption: str) -> dict:
     achat_max, mult, label = _calcul_palier(prix_rev) if prix_rev > 0 else (0, 3.0, "x3")
 
     # ── SCORE OPPORTUNITE /10 ─────────────────────────────
-    score = 5.0
-    # Demande
-    if demande.upper() == "FORTE":   score += 2.0
-    elif demande.upper() == "MOYENNE": score += 1.0
-    # Vitesse de vente
-    if vitesse.upper() == "RAPIDE":  score += 1.5
-    elif vitesse.upper() == "NORMALE": score += 0.5
-    # Marge potentielle
+    # ── SCORING /10 — 5 critères pondérés ────────────────────────────
+    score = 0.0
+
+    # 1. DEMANDE (0-2.5 pts) — indicateur de liquidité du marché
+    demande_up = demande.upper()
+    if demande_up == "FORTE":   score += 2.5
+    elif demande_up == "MOYENNE": score += 1.5
+    else:                         score += 0.5  # FAIBLE
+
+    # 2. VITESSE DE VENTE (0-2 pts)
+    vitesse_up = vitesse.upper()
+    if vitesse_up == "RAPIDE":  score += 2.0
+    elif vitesse_up == "NORMALE": score += 1.0
+    else:                         score += 0.0  # LENTE
+
+    # 3. MARGE POTENTIELLE (0-3 pts) — critère principal
     marge_potentielle = prix_rev - achat_max
-    if marge_potentielle >= achat_max:  score += 1.5  # marge > 100%
-    elif marge_potentielle >= achat_max * 0.5: score += 0.5
-    # Envoi
-    if envoi.upper() == "FACILE":    score += 0.5
-    elif envoi.upper() == "DIFFICILE": score -= 1.0
-    # Nombre d'annonces (liquidite)
+    taux_marge = (marge_potentielle / achat_max) if achat_max > 0 else 0
+    if taux_marge >= 2.0:    score += 3.0   # marge > 200% (x3)
+    elif taux_marge >= 1.5:  score += 2.5   # marge > 150%
+    elif taux_marge >= 1.0:  score += 2.0   # marge > 100% (x2)
+    elif taux_marge >= 0.5:  score += 1.0   # marge > 50%
+    elif taux_marge > 0:     score += 0.5
+    else:                    score += 0.0   # marge nulle ou négative
+
+    # 4. FACILITÉ D'ENVOI (0-1.5 pts)
+    envoi_up = envoi.upper()
+    if envoi_up == "FACILE":    score += 1.5
+    elif envoi_up == "MOYEN":   score += 0.75
+    else:                       score -= 0.5  # DIFFICILE = pénalité
+
+    # 5. LIQUIDITÉ MARCHÉ — nb annonces (0-1 pt)
     try:
         nb_int = int(str(nb).replace("+", "").strip())
-        if nb_int >= 20: score += 0.5
-        elif nb_int <= 3: score -= 0.5
-    except: pass
+        if 5 <= nb_int <= 30:   score += 1.0   # marché actif mais pas saturé
+        elif nb_int > 30:       score += 0.5   # marché saturé
+        elif nb_int >= 1:       score += 0.75  # peu d'annonces = moins de concurrence
+        else:                   score += 0.0
+    except:
+        score += 0.5  # données insuffisantes = neutre
+
     score = round(max(1.0, min(10.0, score)), 1)
+
+    # ── Prix max d'achat rentable recalculé plus précisément ──────
+    # achat_max = prix_revente / multiplicateur (déjà calculé) mais on l'affine
+    # En tenant compte des frais plateforme (~13% eBay)
+    frais_pf_estimes = prix_rev * 0.13
+    achat_max_net = (prix_rev - frais_pf_estimes) / mult if mult > 0 else achat_max
 
     return {
         "objet": objet_id,
@@ -271,6 +298,7 @@ async def analyser_marche(photo_url: str, caption: str) -> dict:
         "prix_haut": prix_haut,
         "prix_revente": prix_rev,
         "achat_max": achat_max,
+        "achat_max_net": round(achat_max_net, 2),
         "mult": mult,
         "label": label,
         "demande": demande,
