@@ -74,6 +74,28 @@ def _est_lot(f: dict) -> bool:
     return float(f.get("Quantite totale") or 1) > 1
 
 
+def _capital_periode(liste: list) -> float:
+    """
+    Calcule le capital réel investi pour une liste de fiches.
+    Groupe par description pour éviter le double-comptage des lots :
+    - 1 fiche lot principale (Prix achat total renseigné) + N copies unitaires (sans pa_total)
+    → On prend uniquement le pa_total de la fiche principale.
+    - Articles uniques (sans pa_total) → somme des pa_unitaire.
+    """
+    groupes = {}
+    for f in liste:
+        desc = f.get("Description") or "?"
+        groupes.setdefault(desc, []).append(f)
+    total = 0.0
+    for groupe in groupes.values():
+        avec_total = [f for f in groupe if f.get("Prix achat total")]
+        if avec_total:
+            total += sum(float(f["Prix achat total"]) for f in avec_total)
+        else:
+            total += sum(float(f.get("Prix achat unitaire") or 0) for f in groupe)
+    return total
+
+
 def _frais_pf(f: dict) -> float:
     frais = f.get("Frais plateforme")
     if frais:
@@ -115,15 +137,7 @@ async def generate_report(periode: str = "semaine") -> str:
 
     achetes = [f for f in fl if date_ok(f.get("Date achat", ""))]
 
-    # DEBUG — log de toutes les valeurs distinctes
-    valeurs = {}
-    for f in achetes:
-        val = _prix_achat_total_fiche(f)
-        key = f"{f.get('Prix achat total','VIDE')}|{f.get('Prix achat unitaire','VIDE')}|{f.get('Quantite totale','VIDE')}|{val:.4f}"
-        valeurs[key] = valeurs.get(key, 0) + 1
-    for k, nb in sorted(valeurs.items()):
-        logger.info(f"DEBUG valeur: [{k}] × {nb} fiches")
-    logger.info(f"DEBUG total: {sum(_prix_achat_total_fiche(f) for f in achetes):.4f}€ pour {len(achetes)} fiches")
+
     vendus = [f for f in fl if f.get("Statut") in ("vendu", "expédié", "livré") and date_ok(f.get("Date vente", ""))]
     en_ligne = [f for f in fl if f.get("Statut") == "en ligne"]
     en_stock = [f for f in fl if f.get("Statut") in ("acheté", "en stockage", "en rénovation")]
@@ -149,10 +163,10 @@ async def generate_report(periode: str = "semaine") -> str:
         sources[src] = sources.get(src, 0) + 1
 
     meilleure = max(vendus, key=_marge, default=None)
-    capital_investi = sum(_prix_achat_total_fiche(f) for f in achetes)
-    capital_stock = sum(_prix_achat_total_fiche(f) for f in en_ligne + en_stock)
+    capital_investi = _capital_periode(achetes)
+    capital_stock = _capital_periode(en_ligne + en_stock)
     potentiel = sum(float(f.get("Prix vente") or 0) for f in en_ligne)
-    pot_marge = potentiel - sum(_prix_achat_total_fiche(f) for f in en_ligne)
+    pot_marge = potentiel - _capital_periode(en_ligne)
 
     lines = [
         f"📊 *RAPPORT — {label}*",
@@ -240,7 +254,7 @@ async def generate_stock_report() -> str:
         if not items:
             continue
         emoji = emojis.get(s, "•")
-        val = sum(_prix_achat_total_fiche(f) for f in items)
+        val = _capital_periode(items)
         lines.append(f"{emoji} *{s.capitalize()}* : {len(items)} articles — {val:.2f}€")
         if s == "en ligne":
             pf_c: dict = {}
@@ -250,6 +264,7 @@ async def generate_stock_report() -> str:
             for pf, nb in sorted(pf_c.items(), key=lambda x: x[1], reverse=True):
                 lines.append(f"   └ {pf} : {nb} articles")
 
-    capital = sum(_prix_achat_total_fiche(f) for f in fl if f.get("Statut") not in ("vendu", "expédié", "livré"))
+    actifs = [f for f in fl if f.get("Statut") not in ("vendu", "expédié", "livré")]
+    capital = _capital_periode(actifs)
     lines += ["", f"📊 Capital actif immobilisé : *{capital:.2f}€*"]
     return "\n".join(lines)
