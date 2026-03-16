@@ -211,6 +211,157 @@ async def handle_ebay_notification(payload: dict) -> str:
 
 # ─── HANDLER MAKE.COM (LBC / VINTED) ─────────────────────────────────────────
 
+
+
+# ── ANALYSE D'ALERTE ACHAT ────────────────────────────────────────────────────
+# Flux : Alerte mail plateforme → Make.com parse le mail → webhook bot → score IA → notification si >=7
+
+SCORE_MINIMUM_ALERTE = 7.0   # Seuil en dessous duquel on n'envoie PAS de notification
+
+async def analyser_alerte_achat(payload: dict) -> str:
+    """
+    Reçoit une alerte d'achat potentiel depuis Make.com (mail de plateforme parsé).
+
+    Payload attendu :
+    {
+      "secret": "cashbert-secret-2026",
+      "event": "alerte_achat",
+      "source": "lbc" | "vinted" | "ebay" | "leboncoin",
+      "titre": "iPhone 14 Pro 256Go - Très bon état",
+      "prix": 450.0,
+      "vendeur": "dupont75" (optionnel),
+      "localisation": "Paris 75" (optionnel),
+      "lien": "https://www.leboncoin.fr/ad/...",
+      "description": "..." (optionnel, extrait du mail)
+    }
+    """
+    secret = payload.get("secret", "")
+    if secret != WEBHOOK_SECRET:
+        logger.warning("Alerte achat: secret invalide")
+        return "unauthorized"
+
+    source    = payload.get("source", "inconnu").lower()
+    titre     = payload.get("titre", "")
+    prix      = float(payload.get("prix") or 0)
+    lien      = payload.get("lien", "")
+    vendeur   = payload.get("vendeur", "")
+    localisa  = payload.get("localisation", "")
+    descr     = payload.get("description", "")[:300]
+
+    if not titre or prix <= 0:
+        logger.warning(f"Alerte achat incomplète: titre={titre}, prix={prix}")
+        return "incomplete"
+
+    logger.info(f"📨 Alerte achat reçue: [{source}] {titre} — {prix}€")
+
+    # ── Analyse IA rapide : score l'opportunité ───────────────────────────────
+    score_data = await _scorer_opportunite(titre, prix, source, descr)
+    score = score_data.get("score", 0.0)
+    prix_revente = score_data.get("prix_revente", 0)
+    marge_estimee = prix_revente - prix if prix_revente > prix else 0
+    raison = score_data.get("raison", "")
+
+    logger.info(f"Score alerte [{titre[:30]}]: {score}/10 (seuil={SCORE_MINIMUM_ALERTE})")
+
+    # ── Filtre : ignorer si score insuffisant ─────────────────────────────────
+    if score < SCORE_MINIMUM_ALERTE:
+        logger.info(f"⛔ Alerte ignorée (score {score} < {SCORE_MINIMUM_ALERTE})")
+        return "filtered"
+
+    # ── Notification Telegram ─────────────────────────────────────────────────
+    score_emoji = "🟢" if score >= 9 else ("🟡" if score >= 7 else "🔴")
+    source_label = {"lbc": "LeBonCoin", "leboncoin": "LeBonCoin",
+                    "vinted": "Vinted", "ebay": "eBay"}.get(source, source.upper())
+
+    msg_lines = [
+        f"🚨 *OPPORTUNITÉ DÉTECTÉE — {source_label}*",
+        f"{score_emoji} *Score : {score:.1f}/10*",
+        f"",
+        f"📦 *{titre[:60]}*",
+        f"💶 Prix demandé : *{prix:.2f}€*",
+        f"💰 Prix revente estimé : *{prix_revente:.2f}€*",
+        f"📈 Marge estimée : *+{marge_estimee:.2f}€*",
+    ]
+    if vendeur:
+        msg_lines.append(f"👤 Vendeur : {vendeur}")
+    if localisa:
+        msg_lines.append(f"📍 {localisa}")
+    if raison:
+        msg_lines.append(f"")
+        msg_lines.append(f"📝 {raison}")
+    if lien:
+        msg_lines.append(f"")
+        msg_lines.append(f"🔗 [Voir l'annonce]({lien})")
+    msg_lines.append(f"")
+    msg_lines.append(f"_⚡ Réponds vite — les bonnes affaires partent vite_")
+
+    msg = "\n".join(msg_lines)
+    await notifier_telegram(msg, topic="buy")
+    return "ok"
+
+
+async def _scorer_opportunite(titre: str, prix: float, source: str, description: str = "") -> dict:
+    """
+    Score rapide d'une opportunité d'achat via Claude (sans web search pour la vitesse).
+    Utilise les connaissances du modèle + les données fournies.
+    """
+    import anthropic as _anthropic
+    from config.settings import ANTHROPIC_API_KEY, CLAUDE_MODEL
+    _client = _anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+    prompt = f"""Tu es un expert en achat-revente d'occasion. Analyse cette annonce rapidement.
+
+ARTICLE : {titre}
+PRIX DEMANDÉ : {prix}€
+PLATEFORME : {source}
+DESCRIPTION : {description or "non fournie"}
+
+Réponds UNIQUEMENT avec ce format (sans markdown) :
+
+PRIX_REVENTE: [prix de revente réaliste en euros]
+SCORE: [note de 0 à 10 — opportunité d'achat-revente]
+RAISON: [1 phrase justifiant le score]
+
+Critères de scoring :
+- 9-10 : affaire exceptionnelle, marge >200%, demande forte
+- 7-8 : bonne opportunité, marge >100%, marché actif
+- 5-6 : opportunité correcte, marge 50-100%
+- <5 : peu intéressant, marge faible ou marché saturé
+- Pénalise si : prix trop proche du marché, article banal sans plus-value, état inconnu sur article fragile"""
+
+    try:
+        r = _client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=200,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        raw = r.content[0].text if r.content else ""
+
+        import re as _re
+        def _get(key):
+            m = _re.search(rf'^{key}\s*:\s*(.+)', raw, _re.IGNORECASE | _re.MULTILINE)
+            return m.group(1).strip() if m else ""
+
+        prix_rev_str = _get("PRIX_REVENTE")
+        prix_rev_nums = _re.findall(r'\d+', prix_rev_str.replace(" ", ""))
+        prix_rev = float(prix_rev_nums[0]) if prix_rev_nums else prix * 1.5
+
+        score_str = _get("SCORE")
+        score_nums = _re.findall(r'[\d.]+', score_str)
+        score = float(score_nums[0]) if score_nums else 5.0
+        score = max(0.0, min(10.0, score))
+
+        raison = _get("RAISON")
+        return {"score": score, "prix_revente": prix_rev, "raison": raison}
+
+    except Exception as e:
+        logger.warning(f"Scoring opportunité failed: {e}")
+        # Scoring basique sans IA si l'appel échoue
+        ratio = prix_rev_fallback = prix * 2
+        score_fallback = 5.0
+        return {"score": score_fallback, "prix_revente": ratio, "raison": "Scoring IA indisponible"}
+
+
 async def handle_makecom_notification(payload: dict) -> str:
     """
     Payload Make.com attendu :
@@ -230,6 +381,10 @@ async def handle_makecom_notification(payload: dict) -> str:
 
     source = payload.get("source", "inconnu").lower()
     event = payload.get("event", "").lower()
+
+    # Router vers l'analyseur d'opportunités si c'est une alerte achat
+    if event == "alerte_achat":
+        return await analyser_alerte_achat(payload)
     titre_brut = payload.get("titre", "")
     prix = float(payload.get("prix", 0))
     ref = payload.get("ref", None)
