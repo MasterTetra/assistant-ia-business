@@ -360,37 +360,40 @@ def _score_bar(score: float) -> str:
 
 
 # ── RECHERCHE TEXTE LIBRE ──────────────────────────────────────────────────────
-PROMPT_RECHERCHE_TEXTE = """Tu es un expert en achat-revente d'occasion. Analyse le marché pour cet article.
+PROMPT_RECHERCHE_TEXTE = """Tu es un expert en achat-revente d'occasion. Analyse UNIQUEMENT cet article précis.
 
-ARTICLE À RECHERCHER : {query}
+ARTICLE : {query}
 
-Effectue ces recherches :
-1) "{query} site:ebay.fr" — annonces eBay actives avec liens
-2) "{query} ebay.fr vendu" — ventes conclues récentes
-3) "{query} leboncoin" — annonces LBC avec prix
-4) "{query} vinted" — annonces Vinted
+INSTRUCTIONS STRICTES :
+1. Recherche "{query} site:ebay.fr" → annonces ACTIVES seulement (pas vendues)
+2. Recherche "{query} ebay.fr vendu" → ventes conclues des 90 derniers jours
+3. Recherche "{query} site:leboncoin.fr" → annonces LBC ACTIVES
+4. Recherche "{query} site:vinted.fr" → annonces Vinted ACTIVES
 
-IMPORTANT :
-- Donne les VRAIS liens URL des annonces trouvées (format https://...)
-- Prix exacts trouvés, pas d'estimation
-- Distingue clairement EN VENTE vs VENDU
-- Indique la date des ventes conclues si disponible
+RÈGLES ABSOLUES :
+- NE PAS mélanger plusieurs articles différents — analyse UNIQUEMENT "{query}"
+- Liens = URLs complètes d'annonces ENCORE EN VENTE (pas vendues, pas expirées)
+- Prix = prix réels trouvés uniquement, jamais inventés
+- Fourchette = exclure les outliers aberrants (garder 10e-90e percentile des prix trouvés)
+- Si article rare : préciser clairement le peu de données disponibles
+- Vérifier que les annonces correspondent EXACTEMENT à la recherche (même édition, même langue, même modèle)
 
-Format de réponse STRICT (sans markdown) :
+Format STRICT (sans markdown, sans astérisques) :
 
-OBJET: [nom précis de l'article]
+OBJET: [nom précis et complet de l'article trouvé]
 ANNONCES:
-[plateforme | prix | VENDU/EN VENTE | état | lien URL]
-PRIX_BAS: [chiffre]
-PRIX_MOYEN: [chiffre]
-PRIX_HAUT: [chiffre]
-PRIX_REVENTE: [prix réaliste ventes conclues]
-NB_ANNONCES: [nombre trouvé]
+[plateforme | prix en euros | EN VENTE | état | URL complète]
+[plateforme | prix en euros | VENDU le JJ/MM | état | URL si disponible]
+PRIX_BAS: [prix plancher sur articles identiques EN VENTE — exclure outliers]
+PRIX_MOYEN: [médiane des prix EN VENTE]
+PRIX_HAUT: [prix plafond raisonnable — exclure outliers]
+PRIX_REVENTE: [prix de vente réaliste basé sur ventes CONCLUES récentes]
+NB_ANNONCES: [nombre d'annonces EN VENTE trouvées]
 NB_VENDUS: [nombre de ventes conclues trouvées]
-DEMANDE: [FORTE/MOYENNE/FAIBLE]
-VITESSE: [RAPIDE/NORMALE/LENTE]
-RAISON: [analyse courte basée sur les données]
-CONSEIL: [conseil d'achat : prix max à payer pour être rentable]"""
+DEMANDE: [FORTE si >20 ventes récentes / MOYENNE 5-20 / FAIBLE <5]
+VITESSE: [RAPIDE si vendu en <7j / NORMALE 7-30j / LENTE >30j]
+RAISON: [analyse factuelle basée uniquement sur les données trouvées]
+CONSEIL: [prix max d'achat conseillé pour être rentable à la revente]"""
 
 
 async def recherche_texte(query: str) -> dict:
@@ -402,7 +405,7 @@ async def recherche_texte(query: str) -> dict:
         r1 = await _retry(
             client.messages.create,
             model=CLAUDE_MODEL,
-            max_tokens=1200,
+            max_tokens=2000,
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
             messages=[{"role": "user", "content": [{
                 "type": "text",
@@ -413,9 +416,9 @@ async def recherche_texte(query: str) -> dict:
         for block in r1.content:
             if getattr(block, "type", "") == "text" and getattr(block, "text", ""):
                 raw += block.text + "\n"
-        logger.info(f"RECHERCHE TEXTE raw:\n{raw[:600]}")
+        logger.info(f"RECHERCHE TEXTE [{query[:40]}]:\n{raw[:600]}")
     except Exception as e:
-        logger.warning(f"Recherche texte failed: {e}")
+        logger.warning(f"Recherche texte failed [{query}]: {e}")
         raw = ""
 
     # Parser le résultat
@@ -476,17 +479,34 @@ async def recherche_texte(query: str) -> dict:
 
 
 async def recherche_multiple(queries: list) -> list:
-    """Analyse plusieurs articles en parallèle (max 5 simultanés)."""
-    import asyncio
-    # Limiter à 5 en parallèle pour éviter rate limit
+    """
+    Analyse chaque article SÉPARÉMENT — ne jamais grouper.
+    Traitement séquentiel avec pause pour éviter rate limit Anthropic.
+    """
     results = []
-    batch_size = 3
-    for i in range(0, len(queries), batch_size):
-        batch = queries[i:i+batch_size]
-        batch_results = await asyncio.gather(*[recherche_texte(q) for q in batch])
-        results.extend(batch_results)
-        if i + batch_size < len(queries):
-            await asyncio.sleep(10)  # Pause entre batches
+    for i, query in enumerate(queries):
+        logger.info(f"Recherche {i+1}/{len(queries)}: {query}")
+        try:
+            data = await recherche_texte(query)
+            results.append(data)
+        except Exception as e:
+            logger.error(f"Erreur recherche [{query}]: {e}")
+            results.append({
+                "query": query,
+                "objet": query,
+                "annonces": [],
+                "nb_annonces": "0",
+                "nb_vendus": "0",
+                "prix_bas": 0, "prix_moyen": 0, "prix_haut": 0,
+                "prix_revente": 0, "achat_max": 0, "achat_max_net": 0,
+                "mult": 1, "label": "?",
+                "demande": "INCONNUE", "vitesse": "INCONNUE",
+                "raison": f"Erreur: {str(e)[:100]}",
+                "conseil": "", "score": 0, "raw": ""
+            })
+        # Pause entre chaque article pour respecter le rate limit
+        if i < len(queries) - 1:
+            await asyncio.sleep(8)
     return results
 
 
@@ -519,20 +539,25 @@ def formater_recherche(data: dict) -> str:
     score = data["score"]
     score_emoji = "🟢" if score >= 7 else ("🟡" if score >= 5 else "🔴")
 
+    # Calculer la cohérence de la fourchette
+    ecart = data["prix_haut"] - data["prix_bas"] if data["prix_haut"] and data["prix_bas"] else 0
+    fourchette_ok = ecart > 0 and ecart < data["prix_moyen"] * 3 if data["prix_moyen"] else True
+
     lines = [
         f"🔍 *{data['objet']}*",
-        f"{score_emoji} Score : *{score}/10*",
+        f"{'─'*30}",
+        f"{score_emoji} Score opportunité : *{score}/10*",
         "",
-        "📊 *Marché*",
-        f"  • Fourchette : {data['prix_bas']}€ → {data['prix_haut']}€",
-        f"  • Prix moyen : *{data['prix_moyen']}€*",
-        f"  • Prix revente conseillé : *{data['prix_revente']}€*",
-        f"  • Annonces trouvées : {data['nb_annonces']} | Vendus : {data['nb_vendus']}",
-        f"  • Demande : *{data['demande']}* | Vitesse : *{data['vitesse']}*",
+        "📊 *Analyse marché*",
+        f"  • Fourchette marché : *{data['prix_bas']}€ → {data['prix_haut']}€*",
+        f"  • Prix médian : *{data['prix_moyen']}€*",
+        f"  • Prix revente réaliste : *{data['prix_revente']}€* _(basé sur ventes conclues)_",
+        f"  • Annonces actives : {data['nb_annonces']} | Vendus récents : {data['nb_vendus']}",
+        f"  • Demande : *{data['demande']}* | Rotation : *{data['vitesse']}*",
         "",
-        "💰 *Prix d'achat max*",
-        f"  • Brut ({data['label']}) : *{data['achat_max']}€*",
-        f"  • Net (après frais eBay ~13%) : *{data['achat_max_net']}€*",
+        "💰 *Rentabilité*",
+        f"  • Achat max brut ({data['label']}) : *{data['achat_max']}€*",
+        f"  • Achat max net (après ~13% frais) : *{data['achat_max_net']}€*",
     ]
 
     if data.get("raison"):
