@@ -39,8 +39,22 @@ FRAIS_DEFAUT = {"ebay": 0.13, "leboncoin": 0.0, "vinted": 0.05, "autre": 0.0}
 # TVA sur marge (Art. 297A CGI) — biens d'occasion achetés à des non-assujettis
 TVA_MARGE_TAUX = 20 / 120  # = 16.67% de la marge TTC
 
-# Charges sociales estimées (auto-entrepreneur marchandises) — à adapter
-CHARGES_SOCIALES_TAUX = 0.128  # 12.8% du CA HT
+# ── Fiscalité SAS ────────────────────────────────────────────────────────────
+# IS (Impôt sur les Sociétés) : taux réduit 15% jusqu'à 42 500€ de bénéfice,
+#   25% au-delà. On utilise 15% en estimation conservative pour PME/TPE.
+# Cotisations sociales dirigeant : ~45-70% de la rémunération nette.
+#   Si pas de rémunération → 0 (l'IS s'applique sur le bénéfice).
+# CFE (Cotisation Foncière des Entreprises) : fixe, non calculée ici.
+# Note : la SAS ne paie PAS de charges sociales sur le CA directement,
+#   seulement sur la rémunération du dirigeant.
+# ─────────────────────────────────────────────────────────────────────────────
+IS_TAUX_REDUIT = 0.15   # 15% jusqu'à 42 500€ de bénéfice (taux PME)
+IS_SEUIL = 42500.0      # Seuil taux réduit IS
+IS_TAUX_NORMAL = 0.25   # 25% au-delà
+
+# Estimation charges sociales sur rémunération dirigeant (si applicable)
+# Mettre à 0 si pas de rémunération prévue en phase de démarrage
+CHARGES_DIRIGEANT_TAUX = 0.0  # À ajuster selon rémunération dirigeant
 
 
 async def _fetch_all_records() -> list:
@@ -127,9 +141,18 @@ def _tva_marge(marge_ttc: float) -> float:
     return marge_ttc * TVA_MARGE_TAUX if marge_ttc > 0 else 0.0
 
 
+def _is_estime(benefice: float) -> float:
+    """Impôt sur les Sociétés estimé (SAS). Taux réduit 15% jusqu'à 42 500€, 25% au-delà."""
+    if benefice <= 0:
+        return 0.0
+    if benefice <= IS_SEUIL:
+        return benefice * IS_TAUX_REDUIT
+    return IS_SEUIL * IS_TAUX_REDUIT + (benefice - IS_SEUIL) * IS_TAUX_NORMAL
+
+
 def _charges_sociales(ca: float) -> float:
-    """Cotisations sociales auto-entrepreneur marchandises (~12.8% CA)."""
-    return ca * CHARGES_SOCIALES_TAUX
+    """Charges sociales dirigeant SAS (sur rémunération, pas sur CA)."""
+    return ca * CHARGES_DIRIGEANT_TAUX
 
 
 async def generate_report(periode: str = "semaine") -> str:
@@ -183,8 +206,10 @@ async def generate_report(periode: str = "semaine") -> str:
     mb_total = ca - cout_vendus                          # Marge brute HT
     mn_avant_charges = mb_total - fp_total - ft_total   # Après frais directs
     tva_total = _tva_marge(mn_avant_charges)            # TVA sur marge
-    charges = _charges_sociales(ca)                      # Charges sociales
-    mn_nette = mn_avant_charges - tva_total - charges   # Marge nette réelle
+    benefice_avant_is = mn_avant_charges - tva_total    # Bénéfice avant IS
+    is_estime = _is_estime(benefice_avant_is)           # IS 15% ou 25%
+    charges_dir = _charges_sociales(ca)                  # Charges dirigeant
+    mn_nette = benefice_avant_is - is_estime - charges_dir  # Résultat net
     taux_mn = (mn_nette / ca * 100) if ca > 0 else 0
 
     # ── PAR PLATEFORME ────────────────────────────────────────────────────────
@@ -246,9 +271,9 @@ async def generate_report(periode: str = "semaine") -> str:
         "💰 *MARGES*",
         f"  • Marge brute HT : *{mb_total:.2f}€*",
         f"  • Marge après frais directs : *{mn_avant_charges:.2f}€*",
-        f"  • TVA sur marge (Art.297A) : -{tva_total:.2f}€",
-        f"  • Charges sociales (~12.8% CA) : -{charges:.2f}€",
-        f"  • *Marge nette réelle : {mn_nette:.2f}€ ({taux_mn:.1f}%)*",
+        f"  • TVA sur marge (Art.297A CGI) : -{tva_total:.2f}€",
+        f"  • IS estimé (15%/25% bénéfice) : -{is_estime:.2f}€",
+        f"  • *Résultat net SAS : {mn_nette:.2f}€ ({taux_mn:.1f}% CA)*",
     ]
     if meilleure:
         desc = (meilleure.get("Description") or "")[:30]
@@ -278,7 +303,7 @@ async def generate_report(periode: str = "semaine") -> str:
     else:
         perf = "🟠 Marge à améliorer"
     lines += ["", f"⚡ *Performance :* {perf}"]
-    lines.append(f"\n_⚠️ TVA et charges estimées — confirmer avec votre comptable_")
+    lines.append(f"\n_⚠️ Estimations SAS (TVA marge + IS 15%/25%) — à valider avec votre expert-comptable_")
 
     return "\n".join(lines)
 
