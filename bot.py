@@ -221,47 +221,126 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    thinking_msg = await msg.reply_text("🔍 Analyse en cours...\n⏳ ~30 secondes")
+    thinking_msg = await msg.reply_text("🔍 Identification...\n⏳ ~5 secondes")
     try:
         session["last_analysis_time"] = _time.time()
         session["flux_photo_url"] = file_url
         session["flux_caption"] = caption
 
-        from modules.flux import analyser_marche, formater_analyse
-        data = await analyser_marche(file_url, caption)
+        # ── PHASE 1 : Analyse rapide sans web search (<5s) ────────────────────
+        from modules.flux import analyser_marche_rapide, analyser_marche, formater_analyse
+        data = await analyser_marche_rapide(file_url, caption)
         session["flux_data"] = data
 
         await thinking_msg.delete()
-        await send_long_message(msg, formater_analyse(data), parse_mode=None)
 
-        session["mode"] = "flux_attente_achat"
         score = data.get("score", 5.0)
-        from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
-        kb = IKM([[
-            IKB("✅ ACHETER", callback_data="flux_acheter"),
-            IKB("❌ IGNORER", callback_data="flux_ignorer"),
-        ]])
-        # Indicateur visuel du score
         score_bar = "🟢" if score >= 7 else ("🟡" if score >= 5 else "🔴")
         achat_max_net = data.get("achat_max_net", data.get("achat_max", 0))
         demande = data.get("demande", "?").capitalize()
         vitesse = data.get("vitesse", "?").capitalize()
         prix_rev = data.get("prix_revente", 0)
+        confiance = data.get("confiance", "MOYENNE")
+        confiance_emoji = "✅" if confiance == "HAUTE" else ("⚠️" if confiance == "MOYENNE" else "❓")
+
+        from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
+        kb = IKM([[
+            IKB("✅ ACHETER", callback_data="flux_acheter"),
+            IKB("❌ IGNORER", callback_data="flux_ignorer"),
+        ]])
 
         msg_decision = (
             f"{score_bar} *Score opportunité : {score}/10*\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"💰 Prix revente estimé : *{prix_rev}€*\n"
             f"🛒 Prix achat max brut : *{data.get('achat_max', 0)}€*\n"
-            f"📉 Prix achat max net (après frais eBay ~13%) : *{achat_max_net}€*\n"
+            f"📉 Prix achat max net (~13% frais) : *{achat_max_net}€*\n"
             f"📈 Demande : *{demande}* | Vitesse : *{vitesse}*\n"
+            f"{confiance_emoji} Fiabilité estimation : *{confiance}*\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"Tu veux acheter ?"
         )
         await msg.reply_text(msg_decision, parse_mode="Markdown", reply_markup=kb)
+        session["mode"] = "flux_attente_achat"
+
+        # ── PHASE 2 : Enrichissement web en arrière-plan ─────────────────────
+        # Lance la recherche web APRÈS avoir répondu — ne bloque pas l'utilisateur
+        asyncio.create_task(
+            _enrichir_analyse_web(msg, session, data, file_url, caption)
+        )
+
     except Exception as e:
         logger.error(f"Erreur flux: {e}")
         await thinking_msg.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
+
+
+
+async def _enrichir_analyse_web(msg, session: dict, data_rapide: dict, photo_url: str, caption: str):
+    """
+    Phase 2 (arrière-plan) : enrichit l'analyse rapide avec une recherche web.
+    Envoie un second message uniquement si les prix trouvés diffèrent significativement.
+    """
+    try:
+        await asyncio.sleep(2)  # Laisser le temps à l'utilisateur de lire la Phase 1
+        from modules.flux import analyser_marche, formater_analyse
+        data_web = await analyser_marche(photo_url, caption)
+
+        if not data_web:
+            return
+
+        prix_rev_web = data_web.get("prix_revente", 0)
+        prix_rev_rapide = data_rapide.get("prix_revente", 0)
+        score_web = data_web.get("score", 0)
+
+        # N'envoyer le second message que si les données web apportent quelque chose
+        if prix_rev_web == 0:
+            return  # Recherche web sans résultat — inutile d'envoyer
+
+        # Mettre à jour session avec les données enrichies
+        session["flux_data"] = data_web
+
+        # Calculer l'écart entre estimation rapide et données web
+        if prix_rev_rapide > 0:
+            ecart_pct = abs(prix_rev_web - prix_rev_rapide) / prix_rev_rapide * 100
+        else:
+            ecart_pct = 100
+
+        score_bar = "🟢" if score_web >= 7 else ("🟡" if score_web >= 5 else "🔴")
+        achat_max_net = data_web.get("achat_max_net", data_web.get("achat_max", 0))
+
+        # Construire le message d'enrichissement
+        lines = [
+            f"📊 *Données marché en temps réel*",
+            f"━━━━━━━━━━━━━━━━━━━━",
+        ]
+
+        if ecart_pct > 20:
+            diff = prix_rev_web - prix_rev_rapide
+            sign = "+" if diff > 0 else ""
+            lines.append(f"⚡ Prix révisé : *{prix_rev_web}€* ({sign}{diff:.0f}€ vs estimation)")
+        else:
+            lines.append(f"✅ Estimation confirmée : *{prix_rev_web}€*")
+
+        lines += [
+            f"{score_bar} Score révisé : *{score_web}/10*",
+            f"🛒 Achat max net : *{achat_max_net}€*",
+        ]
+
+        # Ajouter les annonces web si trouvées
+        annonces = data_web.get("annonces", [])
+        if annonces:
+            lines.append("")
+            lines.append("🔍 *Annonces trouvées :*")
+            for a in annonces[:4]:
+                pf = a.get("plateforme", "")
+                prix = a.get("prix", "")
+                statut = "✅" if "VENDU" in a.get("statut", "").upper() else "🏪"
+                lines.append(f"  {statut} {pf} — {prix}")
+
+        await msg.reply_text("\n".join(lines), parse_mode="Markdown")
+
+    except Exception as e:
+        logger.info(f"Enrichissement web ignoré (non bloquant): {e}")
 
 
 async def _afficher_annonce_avec_boutons(msg, data_flux: dict, ref: str):
