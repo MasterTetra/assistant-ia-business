@@ -20,7 +20,37 @@ HEADERS = {
 }
 
 # Statuts valides dans l'ordre du cycle de vie
-STATUTS = ["acheté", "en transport", "en stockage", "en rénovation", "en ligne", "vendu", "en cours d'expédition", "livré"]
+STATUTS = [
+    "acheté",
+    "en ligne",
+    "en cours d'expédition",
+    "livré",
+    "vendu",
+    "en stockage",
+    "en rénovation",
+]
+
+# Alias pour faciliter la saisie Telegram (insensible à la casse/accents)
+STATUTS_ALIAS = {
+    "achete":           "acheté",
+    "acheté":           "acheté",
+    "en ligne":         "en ligne",
+    "enligne":          "en ligne",
+    "expedition":       "en cours d'expédition",
+    "expedie":          "en cours d'expédition",
+    "expédié":          "en cours d'expédition",
+    "en cours":         "en cours d'expédition",
+    "en cours d'expédition": "en cours d'expédition",
+    "livre":            "livré",
+    "livré":            "livré",
+    "vendu":            "vendu",
+    "stockage":         "en stockage",
+    "en stockage":      "en stockage",
+    "renovation":       "en rénovation",
+    "rénovation":       "en rénovation",
+    "en rénovation":    "en rénovation",
+    "en renovation":    "en rénovation",
+}
 
 # ─────────────────────────────────────────────
 #  ATTRIBUTION D'EMPLACEMENT AUTOMATIQUE
@@ -265,36 +295,68 @@ async def find_product(query: str) -> str:
 #  METTRE À JOUR LE STATUT
 # ─────────────────────────────────────────────
 
-async def update_status(ref: str, new_status: str) -> str:
-    """Met à jour le statut d'un produit."""
-    if new_status not in STATUTS:
-        return f"⚠️ Statut invalide. Valeurs possibles: {', '.join(STATUTS)}"
+async def update_status(ref: str, new_status_raw: str, plateforme: str = "") -> str:
+    """
+    Met à jour le statut d'un produit.
+    Accepte les alias (expedie, livre, vendu, etc.)
+    Enregistre automatiquement date vente et plateforme si applicable.
+    Cherche par Référence gestion (ex: AV-20260316-0001) ou Référence (ex: REF-0001).
+    """
+    # Résoudre l'alias
+    new_status = STATUTS_ALIAS.get(new_status_raw.lower().strip())
+    if not new_status:
+        # Essayer correspondance partielle
+        for alias, statut in STATUTS_ALIAS.items():
+            if new_status_raw.lower() in alias:
+                new_status = statut
+                break
+    if not new_status:
+        return (
+            f"⚠️ Statut `{new_status_raw}` non reconnu.\n\n"
+            f"Statuts disponibles :\n"
+            + "\n".join(f"  • `{s}`" for s in STATUTS)
+        )
 
     try:
-        # Trouver l'ID Airtable par référence
         async with httpx.AsyncClient(timeout=20) as http:
+            # Chercher d'abord par Référence gestion (format AV-YYYYMMDD-NNNN)
             resp = await http.get(
                 f"{AIRTABLE_URL}/{TABLE_PRODUITS}",
                 headers=HEADERS,
-                params={"filterByFormula": f"{{Référence}}='{ref}'", "maxRecords": 1}
+                params={
+                    "filterByFormula": f"{{Référence gestion}}='{ref}'",
+                    "maxRecords": 1
+                }
             )
+            records = resp.json().get("records", [])
 
-        records = resp.json().get("records", [])
+            # Fallback : chercher par Référence classique
+            if not records:
+                resp = await http.get(
+                    f"{AIRTABLE_URL}/{TABLE_PRODUITS}",
+                    headers=HEADERS,
+                    params={
+                        "filterByFormula": f"{{Référence}}='{ref}'",
+                        "maxRecords": 1
+                    }
+                )
+                records = resp.json().get("records", [])
+
         if not records:
-            return f"⚠️ Produit {ref} non trouvé."
+            return f"⚠️ Produit `{ref}` non trouvé dans Airtable."
 
         record_id = records[0]["id"]
+        old_status = records[0].get("fields", {}).get("Statut", "?")
         update_fields = {"Statut": new_status}
 
-        # Si vendu : enregistrer date vente + plateforme
-        if new_status == "vendu":
-            update_fields["Date vente"] = datetime.now().strftime("%Y-%m-%d")
-            if plateforme:
-                update_fields["Plateforme vente"] = plateforme
+        # Date vente automatique pour les statuts de transaction
+        if new_status in ("en cours d'expédition", "livré", "vendu"):
+            if not records[0].get("fields", {}).get("Date vente"):
+                update_fields["Date vente"] = datetime.now().strftime("%Y-%m-%d")
 
-        # Si livré, libérer l'emplacement
-        if new_status == "livré":
-            update_fields["Date vente"] = datetime.now().strftime("%Y-%m-%d")
+        # Plateforme si fournie
+        if plateforme:
+            update_fields["Plateforme vente"] = plateforme
 
         async with httpx.AsyncClient(timeout=20) as http:
             resp = await http.patch(
@@ -304,8 +366,16 @@ async def update_status(ref: str, new_status: str) -> str:
             )
 
         if resp.status_code == 200:
-            return f"✅ Statut de `{ref}` mis à jour : *{new_status}*"
-        return f"⚠️ Erreur mise à jour: {resp.status_code}"
+            emoji_map = {
+                "acheté": "🛒", "en ligne": "🟢", "en cours d'expédition": "📬",
+                "livré": "📦", "vendu": "✅", "en stockage": "🏭", "en rénovation": "🔧"
+            }
+            emoji = emoji_map.get(new_status, "🔄")
+            msg = f"{emoji} *{ref}* : `{old_status}` → `{new_status}`"
+            if plateforme:
+                msg += f" ({plateforme})"
+            return msg
+        return f"⚠️ Erreur Airtable: {resp.status_code} — {resp.text[:100]}"
 
     except Exception as e:
         return f"⚠️ Erreur: {str(e)}"
