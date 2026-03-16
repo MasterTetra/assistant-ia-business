@@ -1846,6 +1846,87 @@ async def cmd_lot_annuler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session["lot_resultats"] = []
     await update.message.reply_text(f"❌ Lot annulé. {nb} photo(s) supprimées.")
 
+async def cmd_alertes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /alertes          → affiche la config actuelle
+    /alertes seuil 7  → change le seuil minimum de score
+    /alertes test     → simule une alerte pour tester
+    """
+    from modules.webhook_server import SCORE_MINIMUM_ALERTE
+    import modules.webhook_server as ws
+
+    if not context.args:
+        await update.message.reply_text(
+            f"🔔 *Configuration des alertes*\n\n"
+            f"Seuil actuel : *{ws.SCORE_MINIMUM_ALERTE}/10*\n"
+            f"_(seules les annonces avec score ≥ {ws.SCORE_MINIMUM_ALERTE} déclenchent une notification)_\n\n"
+            f"*Commandes :*\n"
+            f"`/alertes seuil 7` — notifier à partir de 7/10\n"
+            f"`/alertes seuil 8` — notifier à partir de 8/10 (strict)\n"
+            f"`/alertes seuil 6` — notifier à partir de 6/10 (large)\n"
+            f"`/alertes test` — envoyer une alerte test\n\n"
+            f"*Comment configurer les alertes plateformes :*\n"
+            f"1️⃣ LeBonCoin → Mes alertes → activer les notifications mail\n"
+            f"2️⃣ Vinted → Mes recherches sauvegardées → notifications mail\n"
+            f"3️⃣ eBay → Recherches sauvegardées → alerte par mail\n"
+            f"4️⃣ Make.com parse le mail et envoie au webhook\n"
+            f"5️⃣ Le bot score et notifie si ≥ seuil",
+            parse_mode="Markdown"
+        )
+        return
+
+    cmd = context.args[0].lower()
+
+    if cmd == "seuil" and len(context.args) >= 2:
+        try:
+            nouveau_seuil = float(context.args[1])
+            if not 1 <= nouveau_seuil <= 10:
+                await update.message.reply_text("⚠️ Le seuil doit être entre 1 et 10.")
+                return
+            ws.SCORE_MINIMUM_ALERTE = nouveau_seuil
+            emoji = "🟢" if nouveau_seuil <= 6 else ("🟡" if nouveau_seuil <= 8 else "🔴")
+            await update.message.reply_text(
+                f"{emoji} Seuil mis à jour : *{nouveau_seuil}/10*\n"
+                f"_Tu recevras une notification pour toute annonce avec score ≥ {nouveau_seuil}_",
+                parse_mode="Markdown"
+            )
+        except ValueError:
+            await update.message.reply_text("⚠️ Valeur invalide. Ex: `/alertes seuil 7`", parse_mode="Markdown")
+
+    elif cmd == "test":
+        # Simuler une alerte pour vérifier que tout fonctionne
+        from modules.webhook_server import analyser_alerte_achat
+        test_payload = {
+            "secret": "cashbert-secret-2026",
+            "event": "alerte_achat",
+            "source": "lbc",
+            "titre": "iPhone 14 Pro 256Go Noir - Très bon état",
+            "prix": 450.0,
+            "vendeur": "test_vendeur",
+            "localisation": "Paris 75001",
+            "lien": "https://www.leboncoin.fr/ad/test",
+            "description": "iPhone 14 Pro 256Go Noir, batterie 89%, avec boîte et accessoires."
+        }
+        thinking = await update.message.reply_text("🔔 Simulation d'alerte en cours...")
+        try:
+            result = await analyser_alerte_achat(test_payload)
+            if result == "filtered":
+                await thinking.edit_text(
+                    f"✅ Test OK — alerte reçue mais filtrée\n"
+                    f"_(score inférieur au seuil de {ws.SCORE_MINIMUM_ALERTE}/10)_\n\n"
+                    f"Essaie `/alertes seuil 5` pour abaisser le seuil et recevoir la notification de test.",
+                    parse_mode="Markdown"
+                )
+            elif result == "ok":
+                await thinking.edit_text("✅ Test OK — notif envoyée dans le canal Buy & Search !")
+            else:
+                await thinking.edit_text(f"⚠️ Résultat: {result}")
+        except Exception as e:
+            await thinking.edit_text(f"⚠️ Erreur test: {e}")
+    else:
+        await update.message.reply_text("Usage: `/alertes`, `/alertes seuil 7`, `/alertes test`", parse_mode="Markdown")
+
+
 async def cmd_recherche(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /recherche iPhone 14 Pro 256Go
@@ -2039,6 +2120,7 @@ def main():
     app.add_handler(CommandHandler("finances", cmd_finances))
     app.add_handler(CommandHandler("dashboard", cmd_dashboard))
     app.add_handler(CommandHandler("stock", cmd_stock))
+    app.add_handler(CommandHandler("alertes", cmd_alertes))
     app.add_handler(CommandHandler("recherche", cmd_recherche))
     app.add_handler(CommandHandler("search", cmd_recherche))
     app.add_handler(CommandHandler("statut", cmd_statut))
