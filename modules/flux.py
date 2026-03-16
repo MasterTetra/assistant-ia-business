@@ -357,6 +357,245 @@ def _score_bar(score: float) -> str:
     return "█" * filled + "░" * (10 - filled)
 
 
+
+
+# ── RECHERCHE TEXTE LIBRE ──────────────────────────────────────────────────────
+PROMPT_RECHERCHE_TEXTE = """Tu es un expert en achat-revente d'occasion. Analyse le marché pour cet article.
+
+ARTICLE À RECHERCHER : {query}
+
+Effectue ces recherches :
+1) "{query} site:ebay.fr" — annonces eBay actives avec liens
+2) "{query} ebay.fr vendu" — ventes conclues récentes
+3) "{query} leboncoin" — annonces LBC avec prix
+4) "{query} vinted" — annonces Vinted
+
+IMPORTANT :
+- Donne les VRAIS liens URL des annonces trouvées (format https://...)
+- Prix exacts trouvés, pas d'estimation
+- Distingue clairement EN VENTE vs VENDU
+- Indique la date des ventes conclues si disponible
+
+Format de réponse STRICT (sans markdown) :
+
+OBJET: [nom précis de l'article]
+ANNONCES:
+[plateforme | prix | VENDU/EN VENTE | état | lien URL]
+PRIX_BAS: [chiffre]
+PRIX_MOYEN: [chiffre]
+PRIX_HAUT: [chiffre]
+PRIX_REVENTE: [prix réaliste ventes conclues]
+NB_ANNONCES: [nombre trouvé]
+NB_VENDUS: [nombre de ventes conclues trouvées]
+DEMANDE: [FORTE/MOYENNE/FAIBLE]
+VITESSE: [RAPIDE/NORMALE/LENTE]
+RAISON: [analyse courte basée sur les données]
+CONSEIL: [conseil d'achat : prix max à payer pour être rentable]"""
+
+
+async def recherche_texte(query: str) -> dict:
+    """
+    Analyse marché à partir d'une requête texte libre (sans photo).
+    Retourne un dict avec données marché + liens annonces.
+    """
+    try:
+        r1 = await _retry(
+            client.messages.create,
+            model=CLAUDE_MODEL,
+            max_tokens=1200,
+            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            messages=[{"role": "user", "content": [{
+                "type": "text",
+                "text": PROMPT_RECHERCHE_TEXTE.format(query=query)
+            }]}]
+        )
+        raw = ""
+        for block in r1.content:
+            if getattr(block, "type", "") == "text" and getattr(block, "text", ""):
+                raw += block.text + "\n"
+        logger.info(f"RECHERCHE TEXTE raw:\n{raw[:600]}")
+    except Exception as e:
+        logger.warning(f"Recherche texte failed: {e}")
+        raw = ""
+
+    # Parser le résultat
+    objet_id  = _get(raw, "OBJET") or query
+    prix_bas  = _num(raw, "PRIX_BAS")
+    prix_moy  = _num(raw, "PRIX_MOYEN")
+    prix_haut = _num(raw, "PRIX_HAUT")
+    prix_rev  = _num(raw, "PRIX_REVENTE") or prix_moy or prix_bas
+    nb        = _get(raw, "NB_ANNONCES") or "?"
+    nb_vendus = _get(raw, "NB_VENDUS") or "?"
+    demande   = _get(raw, "DEMANDE") or "MOYENNE"
+    vitesse   = _get(raw, "VITESSE") or "NORMALE"
+    raison    = _get(raw, "RAISON") or ""
+    conseil   = _get(raw, "CONSEIL") or ""
+    annonces  = _annonces_avec_liens(raw)
+
+    # Score
+    achat_max, mult, label = _calcul_palier(prix_rev)
+    frais_pf = prix_rev * 0.13
+    achat_max_net = (prix_rev - frais_pf) / mult if mult > 0 else achat_max
+
+    # Scoring identique à analyser_marche
+    score = 0.0
+    if demande.upper() == "FORTE":   score += 2.5
+    elif demande.upper() == "MOYENNE": score += 1.5
+    else: score += 0.5
+    if vitesse.upper() == "RAPIDE":  score += 2.0
+    elif vitesse.upper() == "NORMALE": score += 1.0
+    taux_marge = ((prix_rev - achat_max) / achat_max) if achat_max > 0 else 0
+    if taux_marge >= 2.0: score += 3.0
+    elif taux_marge >= 1.5: score += 2.5
+    elif taux_marge >= 1.0: score += 2.0
+    elif taux_marge >= 0.5: score += 1.0
+    elif taux_marge > 0: score += 0.5
+    score = round(max(1.0, min(10.0, score)), 1)
+
+    return {
+        "query": query,
+        "objet": objet_id,
+        "annonces": annonces,
+        "nb_annonces": nb,
+        "nb_vendus": nb_vendus,
+        "prix_bas": prix_bas,
+        "prix_moyen": prix_moy,
+        "prix_haut": prix_haut,
+        "prix_revente": prix_rev,
+        "achat_max": achat_max,
+        "achat_max_net": round(achat_max_net, 2),
+        "mult": mult,
+        "label": label,
+        "demande": demande,
+        "vitesse": vitesse,
+        "raison": raison,
+        "conseil": conseil,
+        "score": score,
+        "raw": raw,
+    }
+
+
+async def recherche_multiple(queries: list) -> list:
+    """Analyse plusieurs articles en parallèle (max 5 simultanés)."""
+    import asyncio
+    # Limiter à 5 en parallèle pour éviter rate limit
+    results = []
+    batch_size = 3
+    for i in range(0, len(queries), batch_size):
+        batch = queries[i:i+batch_size]
+        batch_results = await asyncio.gather(*[recherche_texte(q) for q in batch])
+        results.extend(batch_results)
+        if i + batch_size < len(queries):
+            await asyncio.sleep(10)  # Pause entre batches
+    return results
+
+
+def _annonces_avec_liens(text: str) -> list:
+    """Parse les annonces incluant les liens URL."""
+    annonces = []
+    m = re.search(r'ANNONCES\s*:\s*\n(.*?)(?=\n[A-Z_]+:)', text, re.DOTALL | re.IGNORECASE)
+    if not m:
+        return annonces
+    bloc = m.group(1).strip()
+    for line in bloc.split("\n"):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) >= 4:
+            url = next((p for p in parts if p.startswith("http")), "")
+            annonces.append({
+                "plateforme": parts[0] if len(parts) > 0 else "",
+                "prix": parts[1] if len(parts) > 1 else "",
+                "statut": parts[2] if len(parts) > 2 else "",
+                "etat": parts[3] if len(parts) > 3 else "",
+                "url": url,
+            })
+    return annonces
+
+
+def formater_recherche(data: dict) -> str:
+    """Formate le résultat d'une recherche texte pour Telegram."""
+    score = data["score"]
+    score_emoji = "🟢" if score >= 7 else ("🟡" if score >= 5 else "🔴")
+
+    lines = [
+        f"🔍 *{data['objet']}*",
+        f"{score_emoji} Score : *{score}/10*",
+        "",
+        "📊 *Marché*",
+        f"  • Fourchette : {data['prix_bas']}€ → {data['prix_haut']}€",
+        f"  • Prix moyen : *{data['prix_moyen']}€*",
+        f"  • Prix revente conseillé : *{data['prix_revente']}€*",
+        f"  • Annonces trouvées : {data['nb_annonces']} | Vendus : {data['nb_vendus']}",
+        f"  • Demande : *{data['demande']}* | Vitesse : *{data['vitesse']}*",
+        "",
+        "💰 *Prix d'achat max*",
+        f"  • Brut ({data['label']}) : *{data['achat_max']}€*",
+        f"  • Net (après frais eBay ~13%) : *{data['achat_max_net']}€*",
+    ]
+
+    if data.get("raison"):
+        lines += ["", f"📝 {data['raison']}"]
+
+    if data.get("conseil"):
+        lines += [f"💡 {data['conseil']}"]
+
+    # Annonces avec liens
+    annonces_vendues = [a for a in data["annonces"] if "VENDU" in a.get("statut", "").upper()]
+    annonces_en_vente = [a for a in data["annonces"] if "EN VENTE" in a.get("statut", "").upper() or "VENTE" in a.get("statut", "").upper()]
+
+    if annonces_vendues:
+        lines += ["", "✅ *Ventes conclues*"]
+        for a in annonces_vendues[:5]:
+            url_part = f" — [lien]({a['url']})" if a.get("url") else ""
+            lines.append(f"  • {a['plateforme']} | {a['prix']} | {a['etat']}{url_part}")
+
+    if annonces_en_vente:
+        lines += ["", "🏪 *En vente actuellement*"]
+        for a in annonces_en_vente[:5]:
+            url_part = f" — [lien]({a['url']})" if a.get("url") else ""
+            lines.append(f"  • {a['plateforme']} | {a['prix']} | {a['etat']}{url_part}")
+
+    return "\n".join(lines)
+
+
+def formater_rapport_multiple(results: list) -> str:
+    """Rapport consolidé pour plusieurs articles."""
+    if not results:
+        return "⚠️ Aucun résultat."
+
+    lines = [
+        f"🔍 *RAPPORT MARCHÉ — {len(results)} article(s)*",
+        f"📅 {__import__('datetime').datetime.now().strftime('%d/%m/%Y %H:%M')}",
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+
+    # Trier par score décroissant
+    for i, d in enumerate(sorted(results, key=lambda x: x["score"], reverse=True), 1):
+        score = d["score"]
+        emoji = "🟢" if score >= 7 else ("🟡" if score >= 5 else "🔴")
+        lines += [
+            f"{emoji} *{i}. {d['objet']}*",
+            f"   Score : {score}/10 | Prix revente : {d['prix_revente']}€ | Achat max net : {d['achat_max_net']}€",
+            f"   Demande : {d['demande']} | Annonces : {d['nb_annonces']} | Vendus : {d['nb_vendus']}",
+        ]
+        if d.get("raison"):
+            lines.append(f"   📝 {d['raison']}")
+        lines.append("")
+
+    # Meilleure opportunité
+    best = max(results, key=lambda x: x["score"])
+    lines += [
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        f"🏆 *Meilleure opportunité : {best['objet']}*",
+        f"   Score {best['score']}/10 — acheter max {best['achat_max_net']}€ net",
+    ]
+
+    return "\n".join(lines)
+
+
 def formater_analyse(data: dict) -> str:
     score = data.get("score", 5.0)
     emoji = _score_emoji(score)
