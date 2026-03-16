@@ -6,6 +6,11 @@ Bilan financier complet, TVA sur marge, suivi par plateforme.
 import httpx
 import logging
 from datetime import datetime
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
+PARIS_TZ = ZoneInfo("Europe/Paris")
 from config.settings import AIRTABLE_API_KEY, AIRTABLE_BASE_ID, TABLE_PRODUITS
 
 logger = logging.getLogger(__name__)
@@ -71,6 +76,23 @@ def _fp(f):
 
 def _ft(f): return float(f.get("Frais transport") or 0)
 
+
+def _capital_periode(liste: list) -> float:
+    """Calcule le capital réel en groupant par description pour éviter le double-comptage des lots."""
+    groupes = {}
+    for f in liste:
+        desc = f.get("Description") or "?"
+        groupes.setdefault(desc, []).append(f)
+    total = 0.0
+    for groupe in groupes.values():
+        avec_total = [f for f in groupe if f.get("Prix achat total")]
+        if avec_total:
+            total += sum(float(f["Prix achat total"]) for f in avec_total)
+        else:
+            total += sum(float(f.get("Prix achat unitaire") or 0) for f in groupe)
+    return total
+
+
 def _marge_nette(f): return _pv(f) - _pa(f) - _fp(f) - _ft(f)
 
 def _tva_marge(f):
@@ -124,14 +146,14 @@ async def get_financial_summary() -> str:
         pf_data[pf]["frais"] += _fp(f)
 
     # ── Stock et trésorerie ───────────────────────────────────
-    capital_stock = sum(_pa_total(f) for f in en_cours)
+    capital_stock = _capital_periode(en_cours)
     potentiel_vente = sum(_pv(f) for f in en_ligne if _pv(f))
-    pot_marge = potentiel_vente - sum(_pa_total(f) for f in en_ligne)
+    pot_marge = potentiel_vente - _capital_periode(en_ligne)
 
     # ── Top articles vendus (par marge) ──────────────────────
     top5 = sorted(vendus, key=_marge_nette, reverse=True)[:5]
 
-    now = datetime.now()
+    now = datetime.now(PARIS_TZ)
     lines = [
         "💰 *BILAN FINANCIER COMPLET*",
         f"📅 Au {now.strftime('%d/%m/%Y %H:%M')}",
@@ -187,7 +209,7 @@ async def get_realtime_dashboard() -> str:
     """Dashboard temps réel — ventes du jour et de la semaine."""
     from datetime import timedelta
     records = await _fetch_all()
-    now = datetime.now()
+    now = datetime.now(PARIS_TZ)
     today = now.strftime("%Y-%m-%d")
     week_start = (now - timedelta(days=7)).strftime("%Y-%m-%d")
 
@@ -198,7 +220,7 @@ async def get_realtime_dashboard() -> str:
                       if f.get("Statut") in ("vendu", "en cours d'expédition", "livré")
                       and (f.get("Date vente") or "")[:10] >= week_start]
     en_ligne = [f for f in records if f.get("Statut") == "en ligne"]
-    en_stock = [f for f in records if f.get("Statut") in ("acheté", "en stockage")]
+    en_stock = [f for f in records if f.get("Statut") == "acheté"]
 
     ca_j = sum(_pv(f) for f in vendus_jour)
     marge_j = sum(_marge_nette(f) for f in vendus_jour)
