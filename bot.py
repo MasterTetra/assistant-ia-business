@@ -674,8 +674,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             groupes[idx]["annonce"] = annonce_data.get("annonce_brute", "")
             session["listing_groupes"] = groupes
             session["listing_current_idx"] = idx
-            # Afficher avec boutons de modif + valider (lot)
-            await _afficher_annonce_groupe(query.message, session, idx)
+            # Étape 1 : demander l'état avant les modifications
+            await _demander_etat_lot(query.message, session, idx)
         except Exception as e:
             await query.message.reply_text(f"⚠️ Erreur génération: {e}")
 
@@ -683,6 +683,33 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         idx = int(data.split("|")[1])
         session = get_session(query.from_user.id)
         session["listing_current_idx"] = idx
+        g = session.get("listing_groupes", [])[idx] if idx < len(session.get("listing_groupes", [])) else {}
+        # Si état pas encore renseigné, le demander d'abord
+        if not g.get("etat"):
+            await _demander_etat_lot(query.message, session, idx)
+        else:
+            await _afficher_annonce_groupe(query.message, session, idx)
+
+    elif data.startswith("lmod_etat|"):
+        # Format : lmod_etat|idx|état
+        parts = data.split("|", 2)
+        idx = int(parts[1])
+        etat = parts[2] if len(parts) > 2 else "Bon état"
+        session = get_session(query.from_user.id)
+        groupes = session.get("listing_groupes", [])
+        if idx < len(groupes):
+            groupes[idx]["etat"] = etat
+            # Mettre à jour l'annonce draft avec l'état
+            if "annonce_draft" not in groupes[idx] or not groupes[idx]["annonce_draft"]:
+                groupes[idx]["annonce_draft"] = {}
+            groupes[idx]["annonce_draft"]["etat"] = etat
+            session["listing_groupes"] = groupes
+        lot_label = f" — lot ×{groupes[idx]['quantite_lot']}" if groupes[idx].get("est_lot") else ""
+        await query.edit_message_text(
+            f"✅ État : *{etat}*{lot_label}\n_Chargement de l\'annonce..._",
+            parse_mode="Markdown"
+        )
+        # Passer aux modifications
         await _afficher_annonce_groupe(query.message, session, idx)
 
     elif data.startswith("lmod_prix|"):
@@ -752,13 +779,19 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             from modules.stock import update_annonce_airtable, update_prix_vente_lot
             # Sauvegarder annonce sur tous les records
             ok = 0
+            etat = g.get("etat", "")
+            from modules.stock import update_annonce_airtable, update_prix_vente_lot
             for record_id in g["record_ids"]:
                 if await update_annonce_airtable(record_id, annonce_brute):
                     ok += 1
-            # Si prix modifié en session, l'appliquer à tous
+            # Prix mis à jour sur tout le lot si modifié
             nouveau_prix = annonce_draft.get("prix_revente") or g.get("prix_vente")
-            if nouveau_prix and nouveau_prix != g.get("prix_vente_original"):
+            if nouveau_prix:
                 await update_prix_vente_lot(g["record_ids"], float(nouveau_prix))
+            # État sauvegardé dans Notes si renseigné
+            if etat:
+                from modules.stock import update_etat_lot
+                await update_etat_lot(g["record_ids"], etat)
 
             groupes[idx]["annonce"] = annonce_brute
             session["listing_groupes"] = groupes
@@ -1252,6 +1285,29 @@ async def cmd_listing(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
+
+async def _demander_etat_lot(msg, session: dict, idx: int):
+    """Demande l'état de l'article avant les modifications d'annonce."""
+    from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
+    groupes = session.get("listing_groupes", [])
+    g = groupes[idx] if idx < len(groupes) else {}
+    lot_label = f" (lot ×{g['quantite_lot']})" if g.get("est_lot") else ""
+
+    kb = IKM([
+        [IKB("🆕 Neuf / Jamais utilisé",    callback_data=f"lmod_etat|{idx}|Neuf")],
+        [IKB("✅ Très bon état",             callback_data=f"lmod_etat|{idx}|Très bon état")],
+        [IKB("👍 Bon état",                  callback_data=f"lmod_etat|{idx}|Bon état")],
+        [IKB("⚠️ État correct",              callback_data=f"lmod_etat|{idx}|État correct")],
+        [IKB("🔧 Pour pièces / défaut",      callback_data=f"lmod_etat|{idx}|Pour pièces")],
+    ])
+    await msg.reply_text(
+        f"📋 *État de l'article ?*{lot_label}\n"
+        f"_Sera appliqué à tous les articles du lot_" if g.get("est_lot") else
+        f"📋 *État de l'article ?*",
+        parse_mode="Markdown",
+        reply_markup=kb
+    )
+
 async def _afficher_annonce_groupe(msg, session: dict, idx: int):
     """
     Affiche l'annonce d'un groupe avec boutons de modification.
@@ -1330,15 +1386,14 @@ async def _afficher_groupe_listing(msg, session: dict):
 
     kb_rows = []
     if g["annonce"]:
+        # Annonce déjà générée — toujours passer par état + modifs avant de valider
         kb_rows.append([IKB("👁 Voir l'annonce", callback_data=f"listing_voir|{idx}")])
-        kb_rows.append([
-            IKB("✏️ Modifier", callback_data=f"listing_modifier|{idx}"),
-            IKB("✅ OK → Suivant", callback_data=f"listing_suivant|{idx}"),
-        ])
+        kb_rows.append([IKB("▶️ Traiter ce groupe", callback_data=f"listing_modifier|{idx}")])
     else:
+        # Pas d'annonce — générer d'abord
         kb_rows.append([IKB("✨ Générer l'annonce", callback_data=f"listing_generer|{idx}")])
-        kb_rows.append([IKB("⏭ Passer", callback_data=f"listing_suivant|{idx}")])
 
+    kb_rows.append([IKB("⏭ Passer sans traiter", callback_data=f"listing_suivant|{idx}")])
     if idx > 0:
         kb_rows.append([IKB("⬅ Précédent", callback_data=f"listing_precedent|{idx}")])
     kb_rows.append([IKB("🚀 Tout est OK → /post", callback_data="listing_terminer")])
