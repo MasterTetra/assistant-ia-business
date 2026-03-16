@@ -279,25 +279,43 @@ async def handle_makecom_notification(payload: dict) -> str:
         plateforme=source.upper()
     )
 
-    if ok and statut == "vendu":
-        marge = calculer_marge(prix_achat, prix, source)
-        plateforme_label = "LBC" if "lbc" in source else "Vinted"
-        msg = (
-            f"🛒 VENTE {plateforme_label.upper()} DÉTECTÉE\n"
-            f"Article : {titre_brut[:50]}\n"
-            f"Référence : {ref_trouvee}\n"
-            f"Prix vente : {prix}€\n"
-            f"Frais {plateforme_label} : -{marge['frais_plateforme']}€\n"
-            f"Marge nette : +{marge['marge_nette']}€ ({marge['marge_pct']}%)\n\n"
-            f"Statut mis à jour → {statut} ✅"
-        )
-        await notifier_telegram(msg)
-    elif ok:
-        await notifier_telegram(
-            f"📦 {source.upper()} — {titre[:40]}\n"
-            f"Référence : {ref_trouvee}\n"
-            f"Statut → {statut} ✅"
-        )
+    plateforme_label = source.upper() if source else "INCONNU"
+
+    if ok:
+        if statut == "vendu":
+            marge = calculer_marge(prix_achat, prix, source)
+            msg = (
+                f"✅ *VENTE FINALISÉE — {plateforme_label}*\n"
+                f"📦 {titre[:50]}\n"
+                f"🔖 Réf : `{ref_trouvee}`\n"
+                f"💶 Prix vente : *{prix}€*\n"
+                f"🏷️ Frais {plateforme_label} : -{marge['frais_plateforme']}€\n"
+                f"💰 Marge nette : *+{marge['marge_nette']}€* ({marge['marge_pct']}%)\n"
+                f"✅ Statut mis à jour → *vendu*"
+            )
+            await notifier_telegram(msg, topic="sales")
+
+        elif statut == "en cours d'expédition":
+            msg = (
+                f"📬 *EN COURS D'EXPÉDITION — {plateforme_label}*\n"
+                f"📦 {titre[:50]}\n"
+                f"🔖 Réf : `{ref_trouvee}`\n"
+                f"💶 Prix prévu : *{prix}€*\n"
+                f"⏳ En attente de confirmation livraison"
+            )
+            await notifier_telegram(msg, topic="sales")
+
+        elif statut == "livré":
+            marge = calculer_marge(prix_achat, prix, source)
+            msg = (
+                f"📦 *LIVRÉ — EN ATTENTE CONFIRMATION ACHETEUR*\n"
+                f"📦 {titre[:50]}\n"
+                f"🔖 Réf : `{ref_trouvee}`\n"
+                f"💶 Prix : *{prix}€*\n"
+                f"💰 Marge potentielle : *+{marge['marge_nette']}€* ({marge['marge_pct']}%)\n"
+                f"⚠️ Confirmer via /statut {ref_trouvee} vendu dès validation acheteur"
+            )
+            await notifier_telegram(msg, topic="sales")
 
     return "ok"
 
