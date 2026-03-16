@@ -139,7 +139,11 @@ async def aide(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📝 */annonce [ref]* → Générer annonce de vente\n"
         "📊 */rapport* → Rapport 7 jours\n"
         "📊 */rapport mensuel* → Bilan du mois\n"
-        "💰 */finances* → Bilan financier complet\n""🔄 */statut [ref] [statut] [plateforme]* → Mettre à jour un statut\n\n"
+        "📊 */rapport annuel* → Bilan de l'année\n"
+        "💰 */finances* → Bilan financier complet\n"
+        "⚡ */dashboard* → Ventes temps réel\n"
+        "📦 */stock* → État du stock détaillé\n"
+        "🔄 */statut [ref] [statut] [plateforme]* → Mettre à jour un statut\n\n"
         "💡 *Flow achat :*\n"
         "1. /acheter\n"
         "2. Envoie tes photos\n"
@@ -237,10 +241,24 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             IKB("✅ ACHETER", callback_data="flux_acheter"),
             IKB("❌ IGNORER", callback_data="flux_ignorer"),
         ]])
-        await msg.reply_text(
-            f"Prix achat maximum conseille : {data['achat_max']}€\nScore opportunite : {score}/10\n\nTu veux acheter ?",
-            reply_markup=kb
+        # Indicateur visuel du score
+        score_bar = "🟢" if score >= 7 else ("🟡" if score >= 5 else "🔴")
+        achat_max_net = data.get("achat_max_net", data.get("achat_max", 0))
+        demande = data.get("demande", "?").capitalize()
+        vitesse = data.get("vitesse", "?").capitalize()
+        prix_rev = data.get("prix_revente", 0)
+
+        msg_decision = (
+            f"{score_bar} *Score opportunité : {score}/10*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"💰 Prix revente estimé : *{prix_rev}€*\n"
+            f"🛒 Prix achat max brut : *{data.get('achat_max', 0)}€*\n"
+            f"📉 Prix achat max net (après frais eBay ~13%) : *{achat_max_net}€*\n"
+            f"📈 Demande : *{demande}* | Vitesse : *{vitesse}*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"Tu veux acheter ?"
         )
+        await msg.reply_text(msg_decision, parse_mode="Markdown", reply_markup=kb)
     except Exception as e:
         logger.error(f"Erreur flux: {e}")
         await thinking_msg.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
@@ -1003,21 +1021,49 @@ async def _lancer_listing_article(msg, session, ref: str):
     )
 
 async def cmd_rapport(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    periode = "mois" if context.args and context.args[0].lower() == "mensuel" else "semaine"
-    thinking = await update.message.reply_text(f"📊 Rapport {periode}...")
+    arg = (context.args[0].lower() if context.args else "semaine")
+    if arg in ("mensuel", "mois"):
+        periode = "mois"
+    elif arg in ("annuel", "annee", "année"):
+        periode = "annee"
+    else:
+        periode = "semaine"
+    thinking = await update.message.reply_text(f"📊 Génération rapport {periode}...")
     try:
+        from modules.reports import generate_report
         result = await generate_report(periode)
         await thinking.edit_text(result, parse_mode="Markdown")
     except Exception as e:
-        await thinking.edit_text(f"⚠️ Erreur: {e}")
+        await thinking.edit_text(f"⚠️ Erreur rapport: {e}")
 
 async def cmd_finances(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    thinking = await update.message.reply_text("💰 Calcul...")
+    thinking = await update.message.reply_text("💰 Calcul du bilan financier...")
     try:
+        from modules.accounting import get_financial_summary
         result = await get_financial_summary()
         await thinking.edit_text(result, parse_mode="Markdown")
     except Exception as e:
-        await thinking.edit_text(f"⚠️ Erreur: {e}")
+        await thinking.edit_text(f"⚠️ Erreur finances: {e}")
+
+async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Dashboard temps réel — ventes du jour."""
+    thinking = await update.message.reply_text("⚡ Chargement dashboard...")
+    try:
+        from modules.accounting import get_realtime_dashboard
+        result = await get_realtime_dashboard()
+        await thinking.edit_text(result, parse_mode="Markdown")
+    except Exception as e:
+        await thinking.edit_text(f"⚠️ Erreur dashboard: {e}")
+
+async def cmd_stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Rapport détaillé du stock par statut."""
+    thinking = await update.message.reply_text("📦 Analyse du stock...")
+    try:
+        from modules.reports import generate_stock_report
+        result = await generate_stock_report()
+        await thinking.edit_text(result, parse_mode="Markdown")
+    except Exception as e:
+        await thinking.edit_text(f"⚠️ Erreur stock: {e}")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1810,6 +1856,8 @@ def main():
     app.add_handler(CommandHandler("post", cmd_post))
     app.add_handler(CommandHandler("rapport", cmd_rapport))
     app.add_handler(CommandHandler("finances", cmd_finances))
+    app.add_handler(CommandHandler("dashboard", cmd_dashboard))
+    app.add_handler(CommandHandler("stock", cmd_stock))
     app.add_handler(CommandHandler("statut", cmd_statut))
     app.add_handler(CommandHandler("vendre", cmd_vendre))
     app.add_handler(CommandHandler("lot_debut", cmd_lot_debut))
