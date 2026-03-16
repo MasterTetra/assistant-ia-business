@@ -442,10 +442,19 @@ async def publier_sur_ebay(
     def _nettoyer(texte):
         # Supprimer balises XML
         texte = _re.sub(r'<[^>]+>', '', texte)
-        # Supprimer lignes parasites (TITRE:, PRIX:, MOTS-CLES:)
-        texte = _re.sub(r'^(TITRE|PRIX|MOTS.CLES)\s*:.*$', '', texte, flags=_re.MULTILINE)
+        # Supprimer lignes parasites (TITRE:, PRIX:, MOTS-CLES: et leur contenu)
+        texte = _re.sub(r'^(TITRE|PRIX|MOTS.CLES)\s*:?.*$', '', texte, flags=_re.MULTILINE|_re.IGNORECASE)
+        # Supprimer la dernière ligne si c'est une liste de mots-clés (keyword stuffing interdit eBay)
+        # Détection : ligne sans verbe, que des mots séparés par virgules
+        lignes = texte.strip().split('\n')
+        if lignes:
+            derniere = lignes[-1].strip()
+            # Si la dernière ligne contient ≥4 virgules et pas de point/!/?  = mots-clés
+            if derniere.count(',') >= 4 and not any(c in derniere for c in '.!?'):
+                lignes = lignes[:-1]
+        texte = '\n'.join(lignes)
         # Nettoyer lignes vides multiples
-        texte = _re.sub('\\n{3,}', '\\n\\n', texte).strip()
+        texte = _re.sub(r'\n{3,}', '\n\n', texte).strip()
         return texte
 
     titre_safe = echapper_xml(_nettoyer(titre)[:80])
@@ -511,14 +520,32 @@ async def publier_sur_ebay(
             logger.info(f"✅ eBay publié : {item_id} — {url}")
             return {"success": True, "item_id": item_id, "url": url, "error": ""}
         else:
+            # Séparer vraies erreurs et warnings
+            WARNINGS_CONNUS = {"21917236", "21916711", "21916879"}  # Fonds bloqués, champs ignorés
             err_msgs = []
+            warn_msgs = []
             for e in errors:
-                code = _get_xml_val(e, "ErrorCode")
+                code = _get_xml_val(e, "ErrorCode") or ""
+                severity = _get_xml_val(e, "SeverityCode") or ""
                 msg = _get_xml_val(e, "LongMessage") or _get_xml_val(e, "ShortMessage")
-                err_msgs.append(f"[{code}] {msg}")
-            error = " | ".join(err_msgs) or f"Ack={ack}"
-            logger.error(f"❌ eBay ECHEC: {error}")
-            return {"success": False, "item_id": "", "url": "", "error": error}
+                if severity == "Warning" or code in WARNINGS_CONNUS:
+                    warn_msgs.append(f"[{code}] {msg}")
+                else:
+                    err_msgs.append(f"[{code}] {msg}")
+            if warn_msgs:
+                logger.warning(f"⚠️ eBay Warnings (non bloquants): {' | '.join(warn_msgs)}")
+            if err_msgs:
+                error = " | ".join(err_msgs)
+                logger.error(f"❌ eBay ECHEC: {error}")
+                return {"success": False, "item_id": "", "url": "", "error": error}
+            else:
+                # Que des warnings — vérifier si ItemID présent quand même
+                if item_id:
+                    url = f"https://www.ebay.fr/itm/{item_id}"
+                    logger.info(f"✅ eBay publié (avec warnings): {item_id} — {url}")
+                    return {"success": True, "item_id": item_id, "url": url, "error": " | ".join(warn_msgs)}
+                warn_txt = " | ".join(warn_msgs) or f"Ack={ack}"
+                return {"success": False, "item_id": "", "url": "", "error": warn_txt}
     except Exception as e:
         logger.error(f"ebay publish error: {e}", exc_info=True)
         return {"success": False, "item_id": "", "url": "", "error": str(e)}
