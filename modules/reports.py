@@ -166,7 +166,12 @@ async def generate_report(periode: str = "semaine") -> str:
         label = "7 DERNIERS JOURS"
     elif periode == "mois":
         debut = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        label = f"MOIS DE {now.strftime('%B %Y').upper()}"
+        MOIS_FR = {
+            1:"JANVIER", 2:"FÉVRIER", 3:"MARS", 4:"AVRIL",
+            5:"MAI", 6:"JUIN", 7:"JUILLET", 8:"AOÛT",
+            9:"SEPTEMBRE", 10:"OCTOBRE", 11:"NOVEMBRE", 12:"DÉCEMBRE"
+        }
+        label = f"MOIS DE {MOIS_FR[now.month]} {now.year}"
     else:
         debut = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
         label = f"ANNÉE {now.year}"
