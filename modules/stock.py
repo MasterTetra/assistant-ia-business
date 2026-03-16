@@ -20,7 +20,7 @@ HEADERS = {
 }
 
 # Statuts valides dans l'ordre du cycle de vie
-STATUTS = ["acheté", "en transport", "en stockage", "en rénovation", "en ligne", "vendu", "expédié", "livré"]
+STATUTS = ["acheté", "en transport", "en stockage", "en rénovation", "en ligne", "vendu", "en cours d'expédition", "livré"]
 
 # ─────────────────────────────────────────────
 #  ATTRIBUTION D'EMPLACEMENT AUTOMATIQUE
@@ -198,7 +198,7 @@ async def get_stock_summary() -> str:
             count = by_status.get(statut, 0)
             if count > 0:
                 emoji = {"acheté": "🛒", "en stockage": "📦", "en ligne": "🌐",
-                         "vendu": "✅", "expédié": "🚚", "livré": "🏠",
+                         "vendu": "✅", "en cours d'expédition": "🚚", "livré": "🏠",
                          "en transport": "🚛", "en rénovation": "🔧"}.get(statut, "•")
                 lines.append(f"  {emoji} {statut.capitalize()} : {count}")
 
