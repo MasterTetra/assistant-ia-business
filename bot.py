@@ -130,27 +130,40 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def aide(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📋 *TOUTES LES COMMANDES*\n\n"
-        "📸 *Photo seule* → Analyse prix marché\n"
-        "🛒 */acheter* → Démarrer enregistrement achat\n"
-        "📦 */stock* → État du stock\n"
-        "🔍 */chercher [terme]* → Localiser un objet\n"
-        "📝 */annonce [ref]* → Générer annonce de vente\n"
-        "📊 */rapport* → Rapport 7 jours\n"
-        "📊 */rapport mensuel* → Bilan du mois\n"
-        "📊 */rapport annuel* → Bilan de l'année\n"
-        "💰 */finances* → Bilan financier complet\n"
-        "⚡ */dashboard* → Ventes temps réel\n"
-        "📦 */stock* → État du stock détaillé\n"
-        "🔍 */recherche [article]* → Analyse marché + liens annonces\n"        "🔍 */recherche [art1], [art2]* → Rapport multi-articles\n"        "🔄 */statut [ref] [statut] [plateforme]* → Mettre à jour un statut\n\n"
-        "💡 *Flow achat :*\n"
-        "1. /acheter\n"
-        "2. Envoie tes photos\n"
-        "3. /terminer\\_photos\n"
-        "4. Tape `prix;source` ex: `45;Brocante Lyon`",
-        parse_mode="Markdown"
+    texte = (
+        "🤖 *Cashbert — Commandes*\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🛒 *BUY & SEARCH*\n"
+        "  📸 Photo + légende → Analyse marché immédiate\n"
+        "  🔍 `/recherche [article]` → Analyse texte libre\n"
+        "  🔍 `/recherche` + plusieurs lignes → Multi-articles\n"
+        "  📦 `/lot` → Lot de photos (jusqu\'à 50)\n"
+        "  📦 `/lot analyser` → Lancer l\'analyse du lot\n"
+        "  📦 `/lot stop` → Annuler le lot\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "📦 *INVENTORY*\n"
+        "  📦 `/stock` → État global du stock\n"
+        "  📦 `/stock [REF ou mot-clé]` → Chercher un article\n"
+        "  🔄 `/statut [REF] [statut]` → Changer le statut\n"
+        "  Statuts : `acheté` `en ligne` `expedition` `livre` `vendu` `stockage` `renovation`\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🏪 *POST & SELL*\n"
+        "  📝 `/listing` → Sélectionner articles + créer annonces\n"
+        "  📝 `/listing [REF]` → Annonce directe\n"
+        "  🚀 `/post` → Publier sur eBay\n"
+        "  ✅ `/vendre` → Marquer vendu manuellement\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "📊 *RAPPORTS*\n"
+        "  📊 `/rapport` → Menu (jour/semaine/mois/année)\n"
+        "  📊 `/rapport live` → Dashboard temps réel\n"
+        "  📊 `/rapport bilan` → Bilan financier complet\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "⚙️ *CONFIG*\n"
+        "  🔔 `/alertes` → Config alertes opportunités\n"
+        "  🔔 `/alertes seuil 7` → Changer le seuil\n"
     )
+    await update.message.reply_text(texte, parse_mode="Markdown")
+
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -285,7 +298,7 @@ async def _enrichir_analyse_web(msg, session: dict, data_rapide: dict, photo_url
         from modules.flux import analyser_marche, formater_analyse
         data_web = await analyser_marche(photo_url, caption)
 
-        if not data_web:
+        if not data_web or not isinstance(data_web, dict):
             return
 
         prix_rev_web = data_web.get("prix_revente", 0)
@@ -911,30 +924,28 @@ async def cmd_terminer_photos(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 async def cmd_stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """📦 /stock — État détaillé du stock par statut."""
-    thinking = await update.message.reply_text("📦 Analyse du stock...")
-    try:
-        from modules.reports import generate_stock_report
-        result = await generate_stock_report()
-        await thinking.edit_text(result, parse_mode="Markdown")
-    except Exception as e:
-        await thinking.edit_text(f"⚠️ Erreur stock: {e}")
+    """
+    /stock        → état global du stock par statut
+    /stock REF    → chercher un article par référence ou mot-clé
+    """
+    if context.args:
+        q = " ".join(context.args)
+        thinking = await update.message.reply_text(f"🔍 Recherche *{q}*...", parse_mode="Markdown")
+        try:
+            result = await find_product(q)
+            await thinking.edit_text(result, parse_mode="Markdown")
+        except Exception as e:
+            await thinking.edit_text(f"⚠️ Erreur: {e}")
+    else:
+        thinking = await update.message.reply_text("📦 Analyse du stock...")
+        try:
+            from modules.reports import generate_stock_report
+            result = await generate_stock_report()
+            await thinking.edit_text(result, parse_mode="Markdown")
+        except Exception as e:
+            await thinking.edit_text(f"⚠️ Erreur stock: {e}")
 
-async def cmd_chercher(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Usage : `/chercher [nom]`", parse_mode="Markdown")
-        return
-    q = " ".join(context.args)
-    thinking = await update.message.reply_text(f"🔍 Recherche *{q}*...", parse_mode="Markdown")
-    try:
-        result = await find_product(q)
-        await thinking.edit_text(result, parse_mode="Markdown")
-    except Exception as e:
-        await thinking.edit_text(f"⚠️ Erreur: {e}")
 
-async def cmd_annonce(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Alias de /listing pour rétrocompat."""
-    await cmd_listing(update, context)
 
 
 async def cmd_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1107,71 +1118,65 @@ async def _lancer_listing_article(msg, session, ref: str):
 
 async def cmd_rapport(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /rapport → affiche un menu de sélection de période.
-    /rapport [jour|semaine|mois|annuel] → génère directement.
+    /rapport              → menu périodes
+    /rapport jour         → journalier
+    /rapport semaine      → 7 derniers jours
+    /rapport mois         → mois en cours
+    /rapport annee        → année en cours
+    /rapport live         → dashboard temps réel (ex /dashboard)
+    /rapport bilan        → bilan financier complet (ex /finances)
     """
-    # Si argument direct → générer directement
-    if context.args:
-        arg = context.args[0].lower()
-        if arg in ("jour", "journalier", "today"):
-            periode = "jour"
-        elif arg in ("mensuel", "mois", "month"):
-            periode = "mois"
-        elif arg in ("annuel", "annee", "année", "year"):
-            periode = "annee"
-        else:
-            periode = "semaine"
-        await _generer_rapport(update, periode)
+    arg = (context.args[0].lower() if context.args else "").strip()
+
+    # Sous-commandes directes
+    if arg == "live":
+        thinking = await update.message.reply_text("⚡ Chargement dashboard...")
+        try:
+            from modules.accounting import get_realtime_dashboard
+            result = await get_realtime_dashboard()
+            await thinking.edit_text(result, parse_mode="Markdown")
+        except Exception as e:
+            await thinking.edit_text(f"⚠️ Erreur: {e}")
         return
 
-    # Sinon → menu de sélection
+    if arg == "bilan":
+        thinking = await update.message.reply_text("💰 Calcul du bilan financier...")
+        try:
+            from modules.accounting import get_financial_summary
+            result = await get_financial_summary()
+            await thinking.edit_text(result, parse_mode="Markdown")
+        except Exception as e:
+            await thinking.edit_text(f"⚠️ Erreur: {e}")
+        return
+
+    periodes = {"jour": "jour", "journalier": "jour", "semaine": "semaine",
+                "hebdo": "semaine", "mois": "mois", "mensuel": "mois",
+                "annee": "annuel", "annuel": "annuel", "année": "annuel"}
+
+    if arg in periodes:
+        thinking = await update.message.reply_text("📊 Génération du rapport...")
+        try:
+            from modules.reports import generate_report
+            result = await generate_report(periodes[arg])
+            await thinking.edit_text(result, parse_mode="Markdown")
+        except Exception as e:
+            await thinking.edit_text(f"⚠️ Erreur: {e}")
+        return
+
+    # Menu boutons si aucun argument
     from telegram import InlineKeyboardMarkup as IKM, InlineKeyboardButton as IKB
     kb = IKM([
-        [IKB("📅 Rapport Journalier",   callback_data="rapport_jour")],
-        [IKB("📊 Rapport Hebdomadaire", callback_data="rapport_semaine")],
-        [IKB("📆 Rapport Mensuel",      callback_data="rapport_mois")],
-        [IKB("🗓️ Rapport Annuel",       callback_data="rapport_annee")],
+        [IKB("📅 Aujourd'hui", callback_data="rapport_jour"),
+         IKB("📅 7 jours",     callback_data="rapport_semaine")],
+        [IKB("📅 Ce mois",     callback_data="rapport_mois"),
+         IKB("📅 Cette année", callback_data="rapport_annuel")],
+        [IKB("⚡ Dashboard live", callback_data="rapport_live"),
+         IKB("💰 Bilan complet",  callback_data="rapport_bilan")],
     ])
-    await update.message.reply_text(
-        "📊 *Quel rapport veux-tu générer ?*",
-        parse_mode="Markdown",
-        reply_markup=kb
-    )
+    await update.message.reply_text("📊 *Quel rapport veux-tu ?*", parse_mode="Markdown", reply_markup=kb)
 
 
-async def _generer_rapport(update_or_query, periode: str):
-    """Génère et envoie le rapport pour la période donnée."""
-    # Supporte à la fois Message et CallbackQuery
-    is_callback = hasattr(update_or_query, 'edit_message_text')
-    if is_callback:
-        thinking = await update_or_query.edit_message_text(f"📊 Génération rapport {periode}...")
-    else:
-        thinking = await update_or_query.message.reply_text(f"📊 Génération rapport {periode}...")
-    try:
-        from modules.reports import generate_report
-        result = await generate_report(periode)
-        await thinking.edit_text(result, parse_mode="Markdown")
-    except Exception as e:
-        await thinking.edit_text(f"⚠️ Erreur rapport: {e}")
 
-async def cmd_finances(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    thinking = await update.message.reply_text("💰 Calcul du bilan financier...")
-    try:
-        from modules.accounting import get_financial_summary
-        result = await get_financial_summary()
-        await thinking.edit_text(result, parse_mode="Markdown")
-    except Exception as e:
-        await thinking.edit_text(f"⚠️ Erreur finances: {e}")
-
-async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Dashboard temps réel — ventes du jour."""
-    thinking = await update.message.reply_text("⚡ Chargement dashboard...")
-    try:
-        from modules.accounting import get_realtime_dashboard
-        result = await get_realtime_dashboard()
-        await thinking.edit_text(result, parse_mode="Markdown")
-    except Exception as e:
-        await thinking.edit_text(f"⚠️ Erreur dashboard: {e}")
 
 async def cmd_stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Rapport détaillé du stock par statut."""
@@ -1241,38 +1246,97 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             if ";" in raw:
                 parts = raw.split(";")
-                prix_total = float(parts[0])
-                quantite = int(parts[1])
-                if quantite <= 0:
-                    raise ValueError("quantite invalide")
-                prix_unitaire = round(prix_total / quantite, 4)
+                # Prix total — peut être décimal (ex: 1.50)
+                prix_total = float(parts[0].replace(",", "."))
+                # Quantité OU prix unitaire décimal
+                part2 = parts[1].replace(",", ".")
+                if float(part2) < 1 and "." in part2:
+                    # Format prix_total;prix_unitaire (ex: 1;0.10)
+                    prix_unitaire = float(part2)
+                    quantite = round(prix_total / prix_unitaire) if prix_unitaire > 0 else 1
+                else:
+                    # Format prix_total;quantite (ex: 6;60)
+                    quantite = int(float(part2))
+                    if quantite <= 0:
+                        raise ValueError("quantite invalide")
+                    prix_unitaire = round(prix_total / quantite, 4)
             else:
-                prix_total = float(raw)
+                prix_total = float(raw.replace(",", "."))
                 quantite = 1
                 prix_unitaire = prix_total
+            if prix_total <= 0:
+                raise ValueError("prix invalide")
         except (ValueError, IndexError, ZeroDivisionError):
             await update.message.reply_text(
                 "Format invalide. Exemples :\n"
-                "  6;60   → 6€ pour 60 unites\n"
-                "  400;1  → 400€ pour 1 exemplaire"
+                "  `6;60`   → 6€ pour 60 unités (0.10€/u)\n"
+                "  `1;0.10` → 1€ total à 0.10€/u (=10 unités)\n"
+                "  `400;1`  → 400€ pour 1 exemplaire\n"
+                "  `2.50`   → 2.50€ pour 1 article",
+                parse_mode="Markdown"
             )
             return
 
         session["flux_prix_achat"] = prix_unitaire
         session["flux_prix_total"] = prix_total
         session["flux_quantite"] = quantite
-        session["mode"] = None
         data_flux = session.get("flux_data") or {}
         achat_max = data_flux.get("achat_max", 0)
-        prix_revente = data_flux.get("prix_revente", 0)
+        prix_revente_estime = data_flux.get("prix_revente", 0)
+
+        # Demander le prix de vente souhaité avant d'archiver
+        session["mode"] = "flux_attente_prix_vente"
+        marge_estimee = round(prix_revente_estime - prix_unitaire, 2)
+        marge_pct = round(marge_estimee / prix_unitaire * 100) if prix_unitaire > 0 else 0
+
+        await update.message.reply_text(
+            f"💶 Achat : *{prix_total}€* ({prix_unitaire}€/u × {quantite})\n"
+            f"📈 Revente estimée par le bot : *{prix_revente_estime}€* (+{marge_estimee}€ soit +{marge_pct}%)\n\n"
+            f"*À quel prix veux-tu le mettre en vente ?*\n"
+            f"_Tape le prix en euros (ex: `12` ou `9.90`)_\n"
+            f"_Ou tape `ok` pour utiliser l'estimation du bot ({prix_revente_estime}€)_",
+            parse_mode="Markdown"
+        )
+        return
+
+    if session.get("mode") == "flux_attente_prix_vente":
+        raw_pv = update.message.text.strip().replace("€", "").replace(",", ".").lower()
+        data_flux = session.get("flux_data") or {}
+        prix_unitaire = session.get("flux_prix_achat", 0)
+        prix_total = session.get("flux_prix_total", 0)
+        quantite = session.get("flux_quantite", 1)
+        prix_revente_estime = data_flux.get("prix_revente", 0)
+
+        if raw_pv in ("ok", "oui", "yes", ""):
+            prix_vente = prix_revente_estime
+        else:
+            try:
+                prix_vente = float(raw_pv)
+                if prix_vente <= 0:
+                    raise ValueError()
+            except ValueError:
+                await update.message.reply_text(
+                    "⚠️ Format invalide. Tape un prix (ex: `12`) ou `ok` pour l'estimation.",
+                    parse_mode="Markdown"
+                )
+                return
+
+        # Mettre à jour le prix de vente dans les données
+        data_flux["prix_revente"] = prix_vente
+        data_flux["prix_vente"] = prix_vente
+        session["flux_data"] = data_flux
+        session["mode"] = None
+
+        prix_revente = prix_vente
+        achat_max = data_flux.get("achat_max", 0)
         marge_u = round(prix_revente - prix_unitaire, 2)
         marge_pct = round(marge_u / prix_unitaire * 100) if prix_unitaire > 0 else 0
         marge_totale = round(marge_u * quantite, 2)
         marge_ok = (achat_max == 0) or (prix_unitaire == 0) or (prix_unitaire <= achat_max)
         statut_icon = "✅" if marge_ok else "⚠️"
-        statut_txt = "BON ACHAT" if marge_ok else f"AU-DESSUS du seuil ({achat_max}€/u conseille)"
+        statut_txt = "BON ACHAT" if marge_ok else f"AU-DESSUS du seuil ({achat_max}€/u conseillé)"
 
-        # Archiver dans Airtable directement — sans annonce
+        # Archiver dans Airtable
         thinking = await update.message.reply_text("💾 Création fiche produit...")
         try:
             from modules.flux import generer_ref, archiver
@@ -1783,6 +1847,20 @@ async def cmd_analyser(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
+async def cmd_lot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /lot          → démarrer la collecte de photos en lot
+    /lot analyser → lancer l'analyse (alias de /lot_analyser)
+    /lot stop     → annuler le lot en cours
+    """
+    arg = (context.args[0].lower() if context.args else "")
+    if arg in ("analyser", "analyse", "go", "lancer"):
+        await cmd_lot_analyser(update, context)
+    elif arg in ("stop", "annuler", "cancel", "non"):
+        await cmd_lot_annuler(update, context)
+    else:
+        await cmd_lot_debut(update, context)
+
 async def cmd_lot_debut(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /lot_debut — Active la collecte de photos en lot
@@ -2185,29 +2263,42 @@ def main():
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
+    # ── Commandes actives ────────────────────────────────────────────────────
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("aide", aide))
+
+    # Buy & Search
+    app.add_handler(CommandHandler("recherche", cmd_recherche))   # Recherche texte + marché
+    app.add_handler(CommandHandler("lot", cmd_lot))               # Lot : /lot | /lot analyser | /lot stop
+
+    # Inventory
+    app.add_handler(CommandHandler("stock", cmd_stock))           # /stock | /stock REF
+    app.add_handler(CommandHandler("statut", cmd_statut))         # Changer statut d'un article
+
+    # Post & Sell
+    app.add_handler(CommandHandler("listing", cmd_listing))       # Sélectionner + créer annonce
+    app.add_handler(CommandHandler("post", cmd_post))             # Publier sur eBay
+    app.add_handler(CommandHandler("vendre", cmd_vendre))         # Marquer vendu manuellement
+
+    # Reports
+    app.add_handler(CommandHandler("rapport", cmd_rapport))       # /rapport | /rapport live | /rapport bilan
+
+    # Config
+    app.add_handler(CommandHandler("alertes", cmd_alertes))       # Seuil alertes opportunités
+
+    # ── Rétrocompat (anciens noms redirigent vers les nouvelles commandes) ───
     app.add_handler(CommandHandler("help", aide))
-    app.add_handler(CommandHandler("acheter", cmd_acheter))
-    app.add_handler(CommandHandler("terminer_photos", cmd_terminer_photos))
-    app.add_handler(CommandHandler("stock", cmd_stock))
-    app.add_handler(CommandHandler("chercher", cmd_chercher))
-    app.add_handler(CommandHandler("annonce", cmd_annonce))
-    app.add_handler(CommandHandler("listing", cmd_listing))
-    app.add_handler(CommandHandler("post", cmd_post))
-    app.add_handler(CommandHandler("rapport", cmd_rapport))
-    app.add_handler(CommandHandler("finances", cmd_finances))
-    app.add_handler(CommandHandler("dashboard", cmd_dashboard))
-    app.add_handler(CommandHandler("stock", cmd_stock))
-    app.add_handler(CommandHandler("alertes", cmd_alertes))
-    app.add_handler(CommandHandler("recherche", cmd_recherche))
     app.add_handler(CommandHandler("search", cmd_recherche))
-    app.add_handler(CommandHandler("statut", cmd_statut))
-    app.add_handler(CommandHandler("vendre", cmd_vendre))
+    app.add_handler(CommandHandler("chercher", cmd_stock))
+    app.add_handler(CommandHandler("annonce", cmd_listing))
+    app.add_handler(CommandHandler("finances", cmd_rapport))
+    app.add_handler(CommandHandler("dashboard", cmd_rapport))
     app.add_handler(CommandHandler("lot_debut", cmd_lot_debut))
     app.add_handler(CommandHandler("lot_analyser", cmd_lot_analyser))
     app.add_handler(CommandHandler("lot_annuler", cmd_lot_annuler))
     app.add_handler(CommandHandler("analyser", cmd_analyser))
+    app.add_handler(CommandHandler("terminer_photos", cmd_terminer_photos))
+    app.add_handler(CommandHandler("acheter", cmd_acheter))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(CallbackQueryHandler(handle_callback))
