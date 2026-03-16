@@ -30,7 +30,8 @@ FIELDS = [
 # "en stockage"           → stockage client (location d'espace)
 # "en rénovation"         → en réparation, retiré ou à retirer des plateformes
 
-STATUTS_VENDUS    = ("vendu", "en cours d'expédition", "livré")
+STATUTS_VENDUS    = ("vendu",)                          # Vente finalisée uniquement
+STATUTS_EN_ATTENTE = ("en cours d'expédition", "livré")  # Vente probable mais non confirmée
 STATUTS_ACTIFS    = ("acheté", "en ligne", "en cours d'expédition", "livré", "en stockage", "en rénovation")
 STATUTS_STOCK     = ("acheté", "en ligne", "en stockage", "en rénovation")
 
@@ -190,7 +191,16 @@ async def generate_report(periode: str = "semaine") -> str:
         src = f.get("Source") or "Non renseigné"
         sources[src] = sources.get(src, 0) + 1
 
-    # ── VENTES de la période ─────────────────────────────────────────────────
+    # ── EN ATTENTE (expédié / livré — vente non encore finalisée) ────────────
+    en_attente = [
+        f for f in fl
+        if f.get("Statut") in STATUTS_EN_ATTENTE
+    ]
+    ca_attente = sum(float(f.get("Prix vente") or 0) for f in en_attente)
+    cout_attente = sum(_prix_achat(f) for f in en_attente)
+    mb_attente = ca_attente - cout_attente
+
+    # ── VENTES de la période (statut "vendu" uniquement) ─────────────────────
     vendus = [
         f for f in fl
         if f.get("Statut") in STATUTS_VENDUS
@@ -250,6 +260,19 @@ async def generate_report(periode: str = "semaine") -> str:
     if sources:
         top = sorted(sources.items(), key=lambda x: x[1], reverse=True)[:3]
         lines.append(f"  • Sources : {', '.join(f'{s} ({n})' for s, n in top)}")
+
+    # Section EN ATTENTE (affichée seulement s'il y a des articles)
+    if en_attente:
+        lines += [
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            "⏳ *EN ATTENTE DE CONFIRMATION*",
+            f"  • Articles en cours d'expédition : *{sum(1 for f in en_attente if f.get('Statut') == 'en cours d\'expédition')}*",
+            f"  • Articles livrés (attente acheteur) : *{sum(1 for f in en_attente if f.get('Statut') == 'livré')}*",
+            f"  • CA potentiel : *{ca_attente:.2f}€*",
+            f"  • Marge brute potentielle : *{mb_attente:.2f}€*",
+            f"  ℹ️ _Non comptabilisé tant que non confirmé_",
+        ]
 
     lines += [
         "",
