@@ -27,7 +27,8 @@ logger = logging.getLogger(__name__)
 PARIS_TZ = ZoneInfo("Europe/Paris")
 AIRTABLE_URL = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}"
 HEADERS = {"Authorization": f"Bearer {AIRTABLE_API_KEY}", "Content-Type": "application/json"}
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+def _get_client():
+    return anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
 
 # ── SYSTEM PROMPT AUDIT ───────────────────────────────────────────────────────
 SYSTEM_AUDIT = """
@@ -213,7 +214,7 @@ Raisonne à partir de tes connaissances du marché français de l'occasion.""",
     prompt_texte = prompts.get(type_audit, prompts["global"])
 
     try:
-        r = client.messages.create(
+        r = _get_client().messages.create(
             model=CLAUDE_MODEL,
             max_tokens=2000,
             system=SYSTEM_AUDIT,
@@ -241,6 +242,16 @@ async def generer_audit(type_audit: str = "global") -> str:
 
     # Construire le résumé des données pour le prompt
     now = datetime.now(PARIS_TZ)
+    # Lire les notes manuelles et veille réglementaire depuis GSheets
+    notes_manuelles = ""
+    veille_reglem = ""
+    try:
+        from modules.gsheets import lire_notes_manuelles, lire_veille_reglementaire
+        notes_manuelles = await lire_notes_manuelles()
+        veille_reglem = await lire_veille_reglementaire()
+    except Exception as e:
+        logger.warning(f"GSheets lecture ignorée: {e}")
+
     donnees_brutes = f"""
 SNAPSHOT BUSINESS — {now.strftime("%d/%m/%Y %H:%M")}
 
@@ -265,6 +276,12 @@ MARGES (top 5 meilleurs) :
 ROTATION :
   Articles vendus rapidement (<7j) : {len(stats["rotation_rapide"])}
   {[f"{r["desc"]} ({r["jours"]}j → {r["pv"]}€)" for r in stats["rotation_rapide"][:5]]}
+
+NOTES MANUELLES (ajoutées par le dirigeant) :
+{notes_manuelles if notes_manuelles else "Aucune note manuelle"}
+
+VEILLE RÉGLEMENTAIRE EN COURS :
+{veille_reglem if veille_reglem else "Aucune veille active"}
 """
 
     # Générer l'audit
@@ -285,5 +302,12 @@ ROTATION :
         f"_Données : {stats['total_articles']} articles analysés_\n"
         f"_Autres audits : /audit pricing · sourcing · fiscal · outils · veille_"
     )
+
+    # ── Archivage automatique dans Google Sheets ──────────────────────────────
+    try:
+        from modules.gsheets import archiver_audit
+        await archiver_audit(type_audit, resultat)
+    except Exception as e:
+        logger.warning(f"GSheets archivage audit ignoré: {e}")
 
     return header + resultat + footer
