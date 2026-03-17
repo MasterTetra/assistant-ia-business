@@ -45,6 +45,8 @@ WAREHOUSE_CONFIG = {
     "zones": ["A", "B", "C", "D"],  # Zones
 }
 
+EBAY_VERIFICATION_TOKEN = os.getenv("EBAY_VERIFICATION_TOKEN", "")
+
 # ─── RÈGLES BUSINESS ──────────────────────────────────────
 # Frais de plateforme (%)
 PLATFORM_FEES = {
@@ -71,4 +73,5 @@ TOPICS = {
     "sales_notifications": 13,    # Sales Notifications
     "post_sell":           3,     # Post & Sell
     "buy_search":          2,     # Buy & Search
+    "audit":               598,   # Audit
 }
