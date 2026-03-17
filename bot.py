@@ -68,6 +68,10 @@ from modules.listings import generate_listing, publish_listing
 from modules.reports import generate_report
 from modules.accounting import get_financial_summary
 from config.settings import TELEGRAM_TOKEN, AUTHORIZED_USERS
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
 
 # ─── SESSIONS ────────────────────────────────────────────
 user_sessions = {}
