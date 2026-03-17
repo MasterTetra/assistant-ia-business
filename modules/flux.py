@@ -97,7 +97,43 @@ PALIERS = [
     (1000, 9999, 1.4, "x1.4"),
 ]
 
-PROMPT_STRUCT = """Tu es un expert en achat-revente d'occasion en France. Analyse cet objet précisément.
+
+# ── SYSTEM PROMPT EXPERT REVENTE ─────────────────────────────────────────────
+SYSTEM_EXPERT = """
+Tu es un système expert en revente, optimisation business et logistique pour une SAS française.
+Ton objectif : maximiser le profit NET, la vitesse de rotation et la scalabilité.
+
+MISSION POUR CHAQUE PRODUIT :
+1. Analyser la rentabilité réelle (avec frais + fiscalité SAS)
+2. Choisir la meilleure plateforme selon la matrice marché
+3. Donner le prix optimal de vente
+4. Estimer la vitesse de vente réaliste
+5. Calculer le profit net réel après tous les frais
+6. Rendre une décision : ACHETER ou REFUSER
+7. Proposer une stratégie de revente concrète
+
+CALCUL DU PROFIT NET RÉEL (SAS France) :
+  Marge brute      = Prix vente - Prix achat
+  Frais plateforme = 13% eBay / 0-5% Vinted / 0% LBC
+  Frais transport  = selon encombrement (0€ si remise en main, 4-15€ si envoi)
+  Marge après frais = Marge brute - frais plateforme - frais transport
+  TVA sur marge    = Marge après frais × 16.67% (Art.297A CGI — régime marge)
+  IS estimé        = Bénéfice × 15% (taux PME jusqu'à 42 500€)
+  PROFIT NET       = Marge après frais - TVA - IS
+
+RÈGLES DE DÉCISION :
+- ACHETER si profit net ≥ 30% du prix de vente ET marge brute ≥ palier minimum
+- REFUSER si marge nette < 20% ou marché saturé ou logistique trop complexe
+- Paliers d'achat maximum : ×3.0 (0-10€) / ×2.5 (10-50€) / ×2.0 (50-100€) / ×1.8 (100-300€) / ×1.6 (300-1000€) / ×1.4 (1000€+)
+
+CRITÈRES DE SCALABILITÉ :
+- Préférer les articles : petit format / envoi facile / fort volume / marge constante
+- Éviter : encombrant / fragile / marché incertain / nécessite expertise spécifique
+- Bonus lot : ×60 articles similaires = 1 seule annonce, stock permanent, rotation optimale
+"""
+
+
+PROMPT_STRUCT = SYSTEM_EXPERT + """
 
 CONNAISSANCE MARCHÉ :
 """ + MARCHE_PLATEFORMES + """
@@ -133,9 +169,12 @@ ENVOI: [FACILE ou MOYEN ou DIFFICILE]
 RAISON: [phrase courte factuelle basée sur les données trouvées]
 PLATEFORME_1: [plateforme principale selon catégorie et rareté]
 PLATEFORME_2: [plateforme secondaire si pertinente]
-PLATEFORME_RAISON: [1 phrase justifiant le choix]"""
+PLATEFORME_RAISON: [1 phrase justifiant le choix]
+PROFIT_NET: [profit net estimé en euros après tous frais + TVA + IS]
+STRATEGIE: [stratégie de revente en 1-2 phrases : timing, présentation, angle marketing]
+DECISION: [ACHETER ou REFUSER]"""
 
-PROMPT_RAPIDE = """Tu es un expert en achat-revente d'occasion en France. Analyse cet objet rapidement.
+PROMPT_RAPIDE = SYSTEM_EXPERT + """
 
 CONNAISSANCE MARCHÉ :
 """ + MARCHE_PLATEFORMES + """
@@ -164,7 +203,10 @@ RAISON: [1 phrase courte sur le marché]
 CONFIANCE: [HAUTE ou MOYENNE ou FAIBLE — ta certitude sur l'identification et les prix]
 PLATEFORME_1: [plateforme principale recommandée selon la matrice marché]
 PLATEFORME_2: [plateforme secondaire si pertinente, sinon AUCUNE]
-PLATEFORME_RAISON: [1 phrase expliquant le choix de plateforme]"""
+PLATEFORME_RAISON: [1 phrase expliquant le choix de plateforme]
+PROFIT_NET: [profit net estimé en euros après frais + TVA + IS]
+STRATEGIE: [stratégie de revente en 1 phrase]
+DECISION: [ACHETER ou REFUSER]"""
 
 PROMPT_ANNONCE = """Tu es expert en vente en ligne (eBay, Leboncoin, Vinted).
 
@@ -307,10 +349,13 @@ async def analyser_marche_rapide(photo_url: str, caption: str) -> dict:
     envoi     = _get(raw, "ENVOI") or "MOYEN"
     raison    = _get(raw, "RAISON") or ""
     confiance = _get(raw, "CONFIANCE") or "MOYENNE"
-    pf1       = _get(raw, "PLATEFORME_1") or ""
-    pf2       = _get(raw, "PLATEFORME_2") or ""
-    pf_raison = _get(raw, "PLATEFORME_RAISON") or ""
-    annonces  = _annonces(raw)
+    pf1        = _get(raw, "PLATEFORME_1") or ""
+    pf2        = _get(raw, "PLATEFORME_2") or ""
+    pf_raison  = _get(raw, "PLATEFORME_RAISON") or ""
+    profit_net = _get(raw, "PROFIT_NET") or ""
+    strategie  = _get(raw, "STRATEGIE") or ""
+    decision   = _get(raw, "DECISION") or ""
+    annonces   = _annonces(raw)
 
     achat_max, mult, label = _calcul_palier(prix_rev)
     frais_pf = prix_rev * 0.13
@@ -329,6 +374,7 @@ async def analyser_marche_rapide(photo_url: str, caption: str) -> dict:
         "encombrement": encombr, "envoi": envoi,
         "raison": raison, "confiance": confiance,
         "plateforme_1": pf1, "plateforme_2": pf2, "plateforme_raison": pf_raison,
+        "profit_net": profit_net, "strategie": strategie, "decision_ia": decision,
         "annonces": annonces, "score": score,
         "market_data": "",  # sera rempli par la Phase 2
         "phase": "rapide",
