@@ -1,4 +1,4 @@
-"""
+"""  # v2.1 — update_etat_lot avec préservation Notes
 MODULE STOCK
 ──────────────────────────────────────────────────────────
 Gestion complète de l'inventaire via Airtable.
@@ -898,4 +898,46 @@ async def update_prix_vente_lot(record_ids: list, prix_vente: float) -> int:
                     ok += 1
     except Exception as e:
         logger.error(f"update_prix_vente_lot error: {e}")
+    return ok
+
+
+async def update_etat_lot(record_ids: list, etat: str) -> int:
+    """
+    Sauvegarde l'état de l'article dans la colonne Notes pour tout le lot.
+    Format dans Airtable : "État : Très bon état"
+    Si Notes contient déjà du contenu, l'état est ajouté en début de Notes.
+    """
+    ok = 0
+    try:
+        async with httpx.AsyncClient(timeout=30) as http:
+            for rid in record_ids:
+                # Lire les Notes existantes pour ne pas les écraser
+                resp_get = await http.get(
+                    f"{AIRTABLE_URL}/{TABLE_PRODUITS}/{rid}",
+                    headers=HEADERS,
+                    params={"fields[]": ["Notes"]}
+                )
+                notes_existantes = ""
+                if resp_get.status_code == 200:
+                    notes_existantes = resp_get.json().get("fields", {}).get("Notes", "") or ""
+
+                # Retirer toute mention d'état précédente si elle existe
+                import re as _re
+                notes_nettoyees = _re.sub(r"État\s*:\s*[^\n]*\n?", "", notes_existantes).strip()
+
+                # Construire les nouvelles Notes : état en premier
+                if notes_nettoyees:
+                    nouvelles_notes = "État : " + etat + "\n" + notes_nettoyees
+                else:
+                    nouvelles_notes = "État : " + etat
+
+                resp = await http.patch(
+                    f"{AIRTABLE_URL}/{TABLE_PRODUITS}/{rid}",
+                    headers=HEADERS,
+                    json={"fields": {"Notes": nouvelles_notes}}
+                )
+                if resp.status_code == 200:
+                    ok += 1
+    except Exception as e:
+        logger.error(f"update_etat_lot error: {e}")
     return ok
