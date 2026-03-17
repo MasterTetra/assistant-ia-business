@@ -162,6 +162,7 @@ async def aide(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  🔍 `/audit` → Audit global business\n"
         "  🔍 `/audit pricing` · `sourcing` · `fiscal` · `outils` · `veille`\n"
         "  📊 `/export hebdo` · `mensuel` · `annuel` → Google Sheets\n"
+        "  🔍 `/veille` · `/veille reg` · `/veille techno` → Veille mensuelle\n"
         "  🔔 `/alertes` → Config alertes opportunités\n"
         "  🔔 `/alertes seuil 7` → Changer le seuil\n"
     )
@@ -2449,6 +2450,73 @@ async def _audit_hebdo_auto(context):
 
 
 
+
+async def cmd_veille(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /veille          → lance la veille mensuelle complète (réglementaire + techno)
+    /veille reg      → veille réglementaire uniquement
+    /veille techno   → veille technologique uniquement
+    """
+    mode = context.args[0].lower() if context.args else "all"
+
+    thinking = await update.message.reply_text(
+        "🔍 Veille en cours (recherche web + analyse IA)...\n⏳ ~30 secondes",
+        parse_mode="Markdown"
+    )
+    try:
+        from modules.veille import (
+            generer_veille_mensuelle, _appel_claude_web,
+            PROMPT_VEILLE_REGLEMENTAIRE, PROMPT_VEILLE_TECHNO,
+            _construire_et_envoyer_message
+        )
+        from datetime import datetime
+        try:
+            from zoneinfo import ZoneInfo
+        except ImportError:
+            from backports.zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("Europe/Paris"))
+        MOIS_FR = {1:"Janvier",2:"Février",3:"Mars",4:"Avril",5:"Mai",6:"Juin",
+                   7:"Juillet",8:"Août",9:"Septembre",10:"Octobre",11:"Novembre",12:"Décembre"}
+        mois = MOIS_FR[now.month]
+
+        if mode == "all":
+            await generer_veille_mensuelle()
+            await thinking.edit_text(
+                "✅ *Veille mensuelle envoyée*\n"
+                "_Résumé dans le topic Audit + archivé dans Google Sheets_",
+                parse_mode="Markdown"
+            )
+        elif mode == "reg":
+            items = await _appel_claude_web(
+                PROMPT_VEILLE_REGLEMENTAIRE.format(mois=mois, annee=now.year)
+            )
+            await _construire_et_envoyer_message(items, [], mois, now.year,
+                                                  now.strftime("%d/%m/%Y"))
+            await thinking.edit_text(
+                f"✅ Veille réglementaire — {len(items)} point(s)\n"
+                "_Résumé dans le topic Audit_",
+                parse_mode="Markdown"
+            )
+        elif mode == "techno":
+            items = await _appel_claude_web(
+                PROMPT_VEILLE_TECHNO.format(mois=mois, annee=now.year)
+            )
+            await _construire_et_envoyer_message([], items, mois, now.year,
+                                                  now.strftime("%d/%m/%Y"))
+            await thinking.edit_text(
+                f"✅ Veille technologique — {len(items)} point(s)\n"
+                "_Résumé dans le topic Audit_",
+                parse_mode="Markdown"
+            )
+        else:
+            await thinking.edit_text(
+                "Usage : `/veille` · `/veille reg` · `/veille techno`",
+                parse_mode="Markdown"
+            )
+    except Exception as e:
+        logger.error(f"cmd_veille: {e}", exc_info=True)
+        await thinking.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
+
 async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /export hebdo   → rapport hebdo → Google Sheets
@@ -2811,6 +2879,7 @@ def main():
     app.add_handler(CommandHandler("rapport", cmd_rapport))       # /rapport | /rapport live | /rapport bilan
 
     # Config
+    app.add_handler(CommandHandler("veille", cmd_veille))          # Veille réglementaire + techno
     app.add_handler(CommandHandler("export", cmd_export))          # Export Google Sheets
     app.add_handler(CommandHandler("audit", cmd_audit))
     app.add_handler(CommandHandler("alertes", cmd_alertes))       # Seuil alertes opportunités
@@ -2843,43 +2912,135 @@ def main():
 
     logger.info("🤖 Bot démarré avec succès !")
 
-    async def _run_all(application):
-        import asyncio as _asyncio
-        from modules.webhook_server import start_webhook_server
-        port = int(os.getenv("PORT", "8080"))
+    
+async def _scheduler_exports(app):
+    """
+    Scheduler simple sans APScheduler.
+    Vérifie toutes les minutes si un export automatique doit être lancé.
+    - Hebdo   : dimanche 23h59
+    - Mensuel : dernier jour du mois 23h59
+    - Annuel  : 31 décembre 23h59
+    """
+    import calendar as _cal
+    logger.info("✅ Scheduler exports démarré")
 
-        # Démarrer webhook server
-        webhook_runner = await start_webhook_server(chat_id=2134299043, port=port)
-
-        # S'abonner aux notifications eBay au démarrage
+    while True:
         try:
-            from modules.ebay_setup import setup_notifications
-            await setup_notifications()
-        except Exception as e:
-            logger.warning(f"eBay setup skipped: {e}")
+            await asyncio.sleep(60)  # Vérifier toutes les minutes
+            now = datetime.now(ZoneInfo("Europe/Paris"))
 
-        # Démarrer le bot dans la même boucle
-        async with application:
-            await application.initialize()
-            await application.start()
-            # Attendre que Telegram expire l'ancienne session (évite 409 Conflict)
-            logger.info("⏳ Attente 15s avant polling (anti-409)...")
-            await asyncio.sleep(15)
-            await application.updater.start_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True
-            )
-            logger.info("✅ Bot + Webhook en ligne")
-            # Attendre indéfiniment
-            stop_event = _asyncio.Event()
-            try:
-                await stop_event.wait()
-            except (KeyboardInterrupt, SystemExit):
-                pass
-            finally:
-                await application.updater.stop()
-                await application.stop()
-                await webhook_runner.cleanup()
+            # Conditions de déclenchement
+            is_dimanche_2359  = (now.weekday() == 6 and now.hour == 23 and now.minute == 59)
+            dernier_jour_mois = _cal.monthrange(now.year, now.month)[1]
+            is_dernier_mois   = (now.day == dernier_jour_mois and now.hour == 23 and now.minute == 59)
+            is_31_dec         = (now.month == 12 and now.day == 31 and now.hour == 23 and now.minute == 59)
+
+            from modules.export_sheets import exporter_rapport
+            from config.settings import SUPERGROUP_ID, TOPICS
+
+            async def _notif(msg: str):
+                """Envoie une notif dans Accounting Report."""
+                try:
+                    thread_id = TOPICS.get("accounting_report")
+                    payload = {
+                        "chat_id": SUPERGROUP_ID,
+                        "text": msg,
+                        "parse_mode": "Markdown"
+                    }
+                    if thread_id:
+                        payload["message_thread_id"] = thread_id
+                    async with httpx.AsyncClient(timeout=15) as http:
+                        await http.post(
+                            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                            json=payload
+                        )
+                except Exception as e:
+                    logger.error(f"_notif scheduler: {e}")
+
+            if is_dimanche_2359:
+                logger.info("📊 Scheduler: export hebdo automatique")
+                ok, stats = await exporter_rapport("hebdo")
+                if ok:
+                    await _notif(
+                        f"📊 *Rapport hebdomadaire archivé*\n"
+                        f"CA : {stats.get('ca', 0):.2f}€ | "
+                        f"Profit net : {stats.get('resultat_net', 0):.2f}€\n"
+                        f"_Archivé dans Google Sheets → Hebdomadaire_"
+                    )
+
+            if is_dernier_mois:
+                logger.info("📊 Scheduler: export mensuel automatique")
+                ok, stats = await exporter_rapport("mensuel")
+                if ok:
+                    await _notif(
+                        f"📊 *Rapport mensuel archivé*\n"
+                        f"CA : {stats.get('ca', 0):.2f}€ | "
+                        f"Profit net : {stats.get('resultat_net', 0):.2f}€\n"
+                        f"_Archivé dans Google Sheets → Mensuel_"
+                    )
+
+            if is_31_dec:
+                logger.info("📊 Scheduler: export annuel automatique")
+                ok, stats = await exporter_rapport("annuel")
+                if ok:
+                    await _notif(
+                        f"📊 *Rapport annuel archivé — {now.year}*\n"
+                        f"CA : {stats.get('ca', 0):.2f}€ | "
+                        f"Profit net : {stats.get('resultat_net', 0):.2f}€\n"
+                        f"_Archivé dans Google Sheets → Annuel_"
+                    )
+
+            # ── Veille mensuelle (1er du mois) ───────────────────────
+            is_premier_mois = (now.day == 1 and now.hour == 8 and now.minute == 0)
+            if is_premier_mois:
+                logger.info("🔍 Scheduler: veille mensuelle automatique")
+                try:
+                    from modules.veille import generer_veille_mensuelle
+                    await generer_veille_mensuelle()
+                    logger.info("✅ Veille mensuelle envoyée")
+                except Exception as e:
+                    logger.error(f"Veille mensuelle auto: {e}")
+
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"_scheduler_exports error: {e}")
+
+async def _run_all(application):
+    from modules.webhook_server import start_webhook_server
+    import asyncio as _aio
+    port = int(os.getenv("PORT", "8080"))
+
+    webhook_runner = await start_webhook_server(chat_id=2134299043, port=port)
+
+    try:
+        from modules.ebay_setup import setup_notifications
+        await setup_notifications()
+    except Exception as e:
+        logger.warning(f"eBay setup skipped: {e}")
+
+    async with application:
+        await application.initialize()
+        await application.start()
+        logger.info("⏳ Attente 15s avant polling (anti-409)...")
+        await asyncio.sleep(15)
+        await application.updater.start_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True
+        )
+        logger.info("✅ Bot + Webhook en ligne")
+        _aio.create_task(_scheduler_exports(application))
+        logger.info("✅ Scheduler exports démarré")
+        stop_event = _aio.Event()
+        try:
+            await stop_event.wait()
+        except (KeyboardInterrupt, SystemExit):
+            pass
+        finally:
+            await application.updater.stop()
+            await application.stop()
+            await webhook_runner.cleanup()
+
 
     import asyncio as _asyncio
     _asyncio.run(_run_all(app))
