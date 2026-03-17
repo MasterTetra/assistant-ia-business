@@ -27,7 +27,9 @@ TOPIC_AUDIT        = 598
 MAKE_WEBHOOK_SHEETS = os.getenv("MAKE_WEBHOOK_SHEETS", "")
 WEBHOOK_SECRET     = os.getenv("WEBHOOK_SECRET", "cashbert-secret-2026")
 
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+def _get_client():
+    """Client Anthropic créé à la demande (évite crash si clé absente au démarrage)."""
+    return anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
 
 # ── PROMPTS ───────────────────────────────────────────────────────────────────
 
@@ -109,7 +111,7 @@ Retourne UNIQUEMENT le JSON, sans texte avant ou après.
 async def _appel_claude_web(prompt: str) -> list:
     """Appel Claude avec web search, retourne une liste d'items JSON."""
     try:
-        r = client.messages.create(
+        r = _get_client().messages.create(
             model=CLAUDE_MODEL,
             max_tokens=2000,
             tools=[{"type": "web_search_20250305", "name": "web_search"}],
