@@ -19,6 +19,75 @@ client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 AIRTABLE_URL = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}"
 HEADERS_AT = {"Authorization": f"Bearer {AIRTABLE_API_KEY}", "Content-Type": "application/json"}
 
+
+# ── BASE DE CONNAISSANCE MARCHÉ ──────────────────────────────────────────────
+MARCHE_PLATEFORMES = """
+LOGIQUE GLOBALE DES PLATEFORMES :
+- Vinted    = mode / petit objet / rotation rapide / cashflow
+- Leboncoin = généraliste + local + volume massif
+- eBay      = international + niche + collection + rare
+- Etsy      = vintage / artisanal / unique / premium
+- Rakuten   = produits culturels + électronique
+
+MATRICE PAR CATÉGORIE :
+MODE & TEXTILE (vêtements, streetwear, luxe, chaussures, sacs, accessoires)
+  → Principal : Vinted | Secondaire : eBay (si marque/rare/vintage) | Tertiaire : Leboncoin (lots)
+
+ÉLECTRONIQUE (smartphones, PC, consoles, accessoires tech)
+  → Principal : Leboncoin + eBay | Secondaire : Rakuten | Tertiaire : Vinted (petits acc.)
+
+JEUX VIDÉO & GEEK (jeux, consoles rétro, Pokémon, figurines, cartes)
+  → Principal : eBay (collection/rare/international) | Secondaire : Leboncoin | Tertiaire : Vinted
+
+LIVRES / CD / DVD / VINYLES / BD / MANGA
+  → Principal : Rakuten + eBay | Secondaire : Leboncoin
+
+MOBILIER / MAISON / DÉCO / ÉLECTROMÉNAGER
+  → Principal : Leboncoin | Secondaire : Facebook Marketplace | eBay/Vinted : DÉCONSEILLÉ
+
+AUTO / PIÈCES AUTO / ACCESSOIRES AUTO
+  → Principal : eBay (international) | Secondaire : Leboncoin
+
+JOUETS / ENFANTS / VÊTEMENTS ENFANTS
+  → Principal : Vinted | Secondaire : Leboncoin | eBay (si collection)
+
+LUXE / COLLECTION (montres, sacs luxe, objets rares)
+  → Principal : eBay | Secondaire : Etsy (vintage) | Vinted (luxe accessible)
+
+BRICOLAGE / OUTILS / MATÉRIEL PRO
+  → Principal : Leboncoin | Secondaire : eBay
+
+ART / VINTAGE / OBJETS ANCIENS / DÉCO VINTAGE
+  → Principal : Etsy | Secondaire : eBay | Tertiaire : Leboncoin
+
+SPORT / FITNESS / VÉLOS
+  → Principal : Leboncoin | Secondaire : eBay (niche)
+
+ANIMAUX / ACCESSOIRES ANIMAUX
+  → Principal : Leboncoin
+
+BEAUTÉ / COSMÉTIQUE / SOINS
+  → Principal : Vinted | Secondaire : Leboncoin
+
+RÈGLE D'OR :
+1. Identifier la catégorie de l'objet
+2. Évaluer : valeur / rareté / taille / encombrement
+3. Appliquer :
+   - petit + courant + mode → Vinted
+   - gros / local / généraliste → Leboncoin
+   - rare / collection / international → eBay
+   - vintage / artistique / unique → Etsy
+4. NE PAS poster partout = perte de temps + incohérence stock + marge réduite
+5. Le vrai levier = TYPE d'objet + RARETÉ + POSITIONNEMENT (pas la plateforme)
+
+STRATÉGIE OPTIMALE :
+- Vinted   → cashflow rapide (rotation)
+- Leboncoin → volume local (masse)
+- eBay     → international / niche (valeur)
+- Etsy     → premium / vintage (marge élevée)
+"""
+
+
 PALIERS = [
     (0,    10,   3.0, "x3"),
     (10,   50,   2.5, "x2.5"),
@@ -28,7 +97,10 @@ PALIERS = [
     (1000, 9999, 1.4, "x1.4"),
 ]
 
-PROMPT_STRUCT = """Tu es un expert en achat-revente d'occasion. Analyse cet objet précisément.
+PROMPT_STRUCT = """Tu es un expert en achat-revente d'occasion en France. Analyse cet objet précisément.
+
+CONNAISSANCE MARCHÉ :
+""" + MARCHE_PLATEFORMES + """
 
 OBJET A ANALYSER : {objet}
 DESCRIPTION COMPLETE : {caption}
@@ -58,14 +130,20 @@ POIDS: [grammes estimés]
 DIMENSIONS: [{dimensions}]
 ENCOMBREMENT: [PETIT ou MOYEN ou GRAND]
 ENVOI: [FACILE ou MOYEN ou DIFFICILE]
-RAISON: [phrase courte factuelle basée sur les données trouvées]"""
+RAISON: [phrase courte factuelle basée sur les données trouvées]
+PLATEFORME_1: [plateforme principale selon catégorie et rareté]
+PLATEFORME_2: [plateforme secondaire si pertinente]
+PLATEFORME_RAISON: [1 phrase justifiant le choix]"""
 
 PROMPT_RAPIDE = """Tu es un expert en achat-revente d'occasion en France. Analyse cet objet rapidement.
+
+CONNAISSANCE MARCHÉ :
+""" + MARCHE_PLATEFORMES + """
 
 OBJET : {objet}
 DESCRIPTION : {caption}
 
-Utilise UNIQUEMENT tes connaissances sur les prix du marché français (eBay.fr, LBC, Vinted).
+Utilise tes connaissances sur les prix du marché français.
 Sois conservateur si tu n'es pas sûr de l'identification.
 
 Réponds UNIQUEMENT avec ce format exact, sans asterisques ni markdown :
@@ -83,7 +161,10 @@ DIMENSIONS: [{dimensions}]
 ENCOMBREMENT: [PETIT ou MOYEN ou GRAND]
 ENVOI: [FACILE ou MOYEN ou DIFFICILE]
 RAISON: [1 phrase courte sur le marché]
-CONFIANCE: [HAUTE ou MOYENNE ou FAIBLE — ta certitude sur l'identification et les prix]"""
+CONFIANCE: [HAUTE ou MOYENNE ou FAIBLE — ta certitude sur l'identification et les prix]
+PLATEFORME_1: [plateforme principale recommandée selon la matrice marché]
+PLATEFORME_2: [plateforme secondaire si pertinente, sinon AUCUNE]
+PLATEFORME_RAISON: [1 phrase expliquant le choix de plateforme]"""
 
 PROMPT_ANNONCE = """Tu es expert en vente en ligne (eBay, Leboncoin, Vinted).
 
@@ -226,6 +307,9 @@ async def analyser_marche_rapide(photo_url: str, caption: str) -> dict:
     envoi     = _get(raw, "ENVOI") or "MOYEN"
     raison    = _get(raw, "RAISON") or ""
     confiance = _get(raw, "CONFIANCE") or "MOYENNE"
+    pf1       = _get(raw, "PLATEFORME_1") or ""
+    pf2       = _get(raw, "PLATEFORME_2") or ""
+    pf_raison = _get(raw, "PLATEFORME_RAISON") or ""
     annonces  = _annonces(raw)
 
     achat_max, mult, label = _calcul_palier(prix_rev)
@@ -244,6 +328,7 @@ async def analyser_marche_rapide(photo_url: str, caption: str) -> dict:
         "poids": poids, "dimensions": dimensions,
         "encombrement": encombr, "envoi": envoi,
         "raison": raison, "confiance": confiance,
+        "plateforme_1": pf1, "plateforme_2": pf2, "plateforme_raison": pf_raison,
         "annonces": annonces, "score": score,
         "market_data": "",  # sera rempli par la Phase 2
         "phase": "rapide",
