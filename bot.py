@@ -161,6 +161,8 @@ async def aide(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⚙️ *CONFIG & ANALYSE*\n"
         "  🔍 `/audit` → Audit global business\n"
         "  🔍 `/audit pricing` · `sourcing` · `fiscal` · `outils` · `veille`\n"
+        "  📊 `/export hebdo` · `mensuel` · `annuel` → Google Sheets\n"
+        "  🔍 `/veille` · `/veille deep` · `/veille update` · `/veille manuelle`\n"
         "  🔔 `/alertes` → Config alertes opportunités\n"
         "  🔔 `/alertes seuil 7` → Changer le seuil\n"
     )
@@ -2420,6 +2422,47 @@ async def cmd_lot_annuler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"❌ Lot annulé. {nb} photo(s) supprimées.")
 
 
+
+async def _export_hebdo_auto(context):
+    """Lundi 8h30 : rapport complet + veille + export Sheets + notif Telegram."""
+    from modules.export_sheets import generer_rapport_hebdo_complet
+    from config.settings import SUPERGROUP_ID, TOPICS
+    try:
+        result = await generer_rapport_hebdo_complet()
+        msg = result["message_telegram"]
+        chat_id = SUPERGROUP_ID
+
+        # Rapport dans Accounting Report
+        thread_acc = TOPICS.get("accounting_report")
+        payload = {"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"}
+        if thread_acc:
+            payload["message_thread_id"] = thread_acc
+        async with __import__("httpx").AsyncClient(timeout=30) as http:
+            await http.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                json=payload
+            )
+        logger.info(f"✅ Rapport hebdo envoyé — {result['nb_veille_ajouts']} items veille ajoutés")
+    except Exception as e:
+        logger.error(f"_export_hebdo_auto: {e}")
+
+
+async def _export_mensuel_auto(context):
+    """Export mensuel → Google Sheets via Make.com."""
+    from modules.export_sheets import exporter_rapport_mensuel
+    ok = await exporter_rapport_mensuel()
+    logger.info(f"{'✅' if ok else '⚠️'} Export mensuel Sheets")
+
+
+async def _export_annuel_auto(context):
+    """Export annuel → Google Sheets — uniquement le 1er janvier."""
+    now = datetime.now(ZoneInfo("Europe/Paris"))
+    if now.month == 1 and now.day == 1:
+        from modules.export_sheets import exporter_rapport_annuel
+        ok = await exporter_rapport_annuel()
+        logger.info(f"{'✅' if ok else '⚠️'} Export annuel Sheets")
+
+
 async def _audit_hebdo_auto(context):
     """Audit automatique hebdomadaire — envoyé dans le canal Accounting Report."""
     from modules.audit import generer_audit
@@ -2443,6 +2486,172 @@ async def _audit_hebdo_auto(context):
         logger.info("✅ Audit hebdomadaire automatique envoyé")
     except Exception as e:
         logger.error(f"Audit hebdo auto error: {e}")
+
+
+async def cmd_gsheets_init(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /gsheets_init → Initialise les en-têtes des 2 Google Sheets.
+    À utiliser UNE SEULE FOIS après création des sheets.
+    """
+    thinking = await update.message.reply_text("📊 Initialisation des Google Sheets...")
+    try:
+        from modules.gsheets import initialiser_sheets
+        result = await initialiser_sheets()
+        await thinking.edit_text(
+            f"📊 *Google Sheets initialisés*\n\n{result}\n\n"
+            f"_Les rapports seront archivés automatiquement à chaque génération._",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await thinking.edit_text(f"⚠️ Erreur: {e}")
+
+
+async def cmd_veille(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /veille          → résumé semaine + top opportunités
+    /veille deep     → analyse complète avec web search
+    /veille update   → analyse + mise à jour Airtable + export Sheets
+    /veille manuelle → analyse les entrées ajoutées manuellement
+    """
+    from modules.export_sheets import (
+        generer_rapport_hebdo_complet, analyser_veille_manuelle,
+        _fetch_veille_existante
+    )
+
+    mode = context.args[0].lower() if context.args else "resume"
+
+    if mode in ("resume", "résumé"):
+        thinking = await update.message.reply_text(
+            "📊 Analyse semaine en cours...\n⏳ ~20 secondes"
+        )
+        try:
+            result = await generer_rapport_hebdo_complet()
+            await thinking.edit_text(result["message_telegram"], parse_mode="Markdown")
+        except Exception as e:
+            await thinking.edit_text(f"⚠️ Erreur: {str(e)[:200]}")
+
+    elif mode == "deep":
+        thinking = await update.message.reply_text(
+            "🔍 Analyse approfondie avec recherche web...\n⏳ ~30 secondes"
+        )
+        try:
+            from modules.export_sheets import client as _client, CLAUDE_MODEL, PROMPT_VEILLE_DEEP
+            r = _client.messages.create(
+                model=CLAUDE_MODEL,
+                max_tokens=2000,
+                tools=[{"type": "web_search_20250305", "name": "web_search"}],
+                messages=[{"role": "user", "content": PROMPT_VEILLE_DEEP}]
+            )
+            raw = "".join(b.text for b in r.content if getattr(b, "type", "") == "text")
+            # Tronquer si trop long
+            if len(raw) > 3800:
+                await thinking.edit_text(raw[:3800], parse_mode="Markdown")
+                await update.message.reply_text(raw[3800:8000], parse_mode="Markdown")
+            else:
+                await thinking.edit_text(raw or "⚠️ Pas de résultat.", parse_mode="Markdown")
+        except Exception as e:
+            await thinking.edit_text(f"⚠️ Erreur: {str(e)[:200]}")
+
+    elif mode == "update":
+        thinking = await update.message.reply_text(
+            "🔄 Analyse + mise à jour Airtable + export Sheets...\n⏳ ~30 secondes"
+        )
+        try:
+            result = await generer_rapport_hebdo_complet()
+            nb = result["nb_veille_ajouts"]
+            msg = (
+                f"✅ *Veille mise à jour*\n"
+                f"  • {nb} nouvelle(s) opportunité(s) ajoutée(s) dans Airtable\n"
+                f"  • Export Google Sheets envoyé\n\n"
+                + result["message_telegram"]
+            )
+            await thinking.edit_text(msg[:4000], parse_mode="Markdown")
+        except Exception as e:
+            await thinking.edit_text(f"⚠️ Erreur: {str(e)[:200]}")
+
+    elif mode == "manuelle":
+        thinking = await update.message.reply_text(
+            "📋 Analyse des entrées manuelles...\n⏳ ~10 secondes"
+        )
+        try:
+            analyse = await analyser_veille_manuelle()
+            await thinking.edit_text(
+                f"📋 *Analyse entrées manuelles*\n\n{analyse[:3800]}",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            await thinking.edit_text(f"⚠️ Erreur: {str(e)[:200]}")
+
+    else:
+        veille = await _fetch_veille_existante()
+        high = [v for v in veille if v.get("Impact") == "HIGH" and v.get("Statut") == "à tester"]
+        lines = [f"📋 *VEILLE — {len(veille)} entrées*\n"]
+        if high:
+            lines.append(f"🔴 *{len(high)} priorité(s) HIGH à traiter :*")
+            for v in high[:5]:
+                lines.append(f"  • {v.get('Sujet', '?')} → {v.get('Action', '?')}")
+        lines.append("\n_Commandes : /veille · /veille deep · /veille update · /veille manuelle_")
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /export hebdo   → exporte le rapport hebdo vers Google Sheets
+    /export mensuel → exporte le rapport mensuel
+    /export annuel  → exporte le rapport annuel
+    /export veille  → génère et exporte la veille réglementaire
+    """
+    from modules.export_sheets import (
+        exporter_rapport_hebdo, exporter_rapport_mensuel,
+        exporter_rapport_annuel, generer_veille_reglementaire
+    )
+    import os
+
+    if not os.getenv("MAKE_WEBHOOK_SHEETS"):
+        await update.message.reply_text(
+            "⚠️ *Variable MAKE_WEBHOOK_SHEETS non configurée*\n\n"
+            "Ajoute dans Railway :\n"
+            "`MAKE_WEBHOOK_SHEETS = https://hook.eu1.make.com/ton-webhook-id`\n\n"
+            "Crée le scénario Make.com avec :\n"
+            "  1. Webhook (déclencheur)\n"
+            "  2. Google Sheets — Add Row (selon onglet)\n"
+            "  3. Chemin : `data.type` → router vers bon onglet",
+            parse_mode="Markdown"
+        )
+        return
+
+    type_export = context.args[0].lower() if context.args else "hebdo"
+    thinking = await update.message.reply_text(f"📊 Export {type_export} vers Google Sheets...")
+
+    try:
+        if type_export == "hebdo":
+            ok = await exporter_rapport_hebdo()
+        elif type_export == "mensuel":
+            ok = await exporter_rapport_mensuel()
+        elif type_export == "annuel":
+            ok = await exporter_rapport_annuel()
+        elif type_export == "veille":
+            items, msg = await generer_veille_reglementaire()
+            ok = len(items) >= 0
+            if ok:
+                await update.message.reply_text(msg, parse_mode="Markdown")
+        else:
+            await thinking.edit_text("Usage: `/export hebdo` · `mensuel` · `annuel` · `veille`",
+                                     parse_mode="Markdown")
+            return
+
+        if ok:
+            await thinking.edit_text(
+                f"✅ Export *{type_export}* envoyé vers Google Sheets\n"
+                f"_Vérifie ton Google Drive → Compta_",
+                parse_mode="Markdown"
+            )
+        else:
+            await thinking.edit_text(
+                f"⚠️ Export échoué. Vérifie que MAKE_WEBHOOK_SHEETS est configuré.",
+            )
+    except Exception as e:
+        await thinking.edit_text(f"⚠️ Erreur: {str(e)[:200]}")
 
 
 async def cmd_audit(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2765,7 +2974,10 @@ def main():
     app.add_handler(CommandHandler("rapport", cmd_rapport))       # /rapport | /rapport live | /rapport bilan
 
     # Config
-    app.add_handler(CommandHandler("audit", cmd_audit))           # Audit & optimisation business
+    app.add_handler(CommandHandler("veille", cmd_veille))          # Veille intelligente
+    app.add_handler(CommandHandler("export", cmd_export))          # Export Google Sheets
+    app.add_handler(CommandHandler("audit", cmd_audit))
+    app.add_handler(CommandHandler("gsheets_init", cmd_gsheets_init))           # Audit & optimisation business
     app.add_handler(CommandHandler("alertes", cmd_alertes))       # Seuil alertes opportunités
 
     # ── Rétrocompat (anciens noms redirigent vers les nouvelles commandes) ───
