@@ -263,23 +263,40 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             IKB("❌ IGNORER", callback_data="flux_ignorer"),
         ]])
 
-        pf1 = data.get("plateforme_1", "")
-        pf2 = data.get("plateforme_2", "")
-        pf_raison = data.get("plateforme_raison", "")
+        pf1        = data.get("plateforme_1", "")
+        pf2        = data.get("plateforme_2", "")
+        pf_raison  = data.get("plateforme_raison", "")
+        profit_net = data.get("profit_net", "")
+        strategie  = data.get("strategie", "")
+        decision_ia = data.get("decision_ia", "")
+
         pf_line = ""
         if pf1:
-            pf_line = f"🏪 Plateforme : *{pf1}*" + (f" + {pf2}" if pf2 and pf2.upper() != "AUCUNE" else "") + "\n"
+            pf_line = f"🏪 *{pf1}*" + (f" + {pf2}" if pf2 and pf2.upper() not in ("AUCUNE", "") else "") + "\n"
             if pf_raison:
                 pf_line += f"_→ {pf_raison}_\n"
 
+        profit_line = f"💵 Profit net estimé : *{profit_net}€*\n" if profit_net else ""
+        strategie_line = f"📌 *Stratégie :* _{strategie}_\n" if strategie else ""
+
+        # Icône décision IA (peut différer du score si marché saturé etc.)
+        if decision_ia.upper() == "ACHETER":
+            dec_icon = "✅"
+        elif decision_ia.upper() == "REFUSER":
+            dec_icon = "❌"
+        else:
+            dec_icon = score_bar
+
         msg_decision = (
-            f"{score_bar} *Score opportunité : {score}/10*\n"
+            f"{dec_icon} *Score : {score}/10*\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"💰 Prix revente estimé : *{prix_rev}€*\n"
-            f"🛒 Prix achat max brut : *{data.get('achat_max', 0)}€*\n"
-            f"📉 Prix achat max net (~13% frais) : *{achat_max_net}€*\n"
+            f"💰 Prix revente : *{prix_rev}€*\n"
+            f"🛒 Achat max brut : *{data.get('achat_max', 0)}€*\n"
+            f"📉 Achat max net : *{achat_max_net}€*\n"
+            f"{profit_line}"
             f"📈 Demande : *{demande}* | Vitesse : *{vitesse}*\n"
             f"{pf_line}"
+            f"{strategie_line}"
             f"{confiance_emoji} Fiabilité : *{confiance}*\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"Tu veux acheter ?"
