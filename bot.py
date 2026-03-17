@@ -2448,7 +2448,10 @@ async def _export_hebdo_auto(context):
 
 
 async def _export_mensuel_auto(context):
-    """Export mensuel → Google Sheets via Make.com."""
+    """Export mensuel → Google Sheets — uniquement le 1er du mois."""
+    now = datetime.now(ZoneInfo("Europe/Paris"))
+    if now.day != 1:
+        return
     from modules.export_sheets import exporter_rapport_mensuel
     ok = await exporter_rapport_mensuel()
     logger.info(f"{'✅' if ok else '⚠️'} Export mensuel Sheets")
