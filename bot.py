@@ -776,21 +776,23 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown"
         )
         try:
-            from modules.stock import update_annonce_airtable, update_prix_vente_lot
-            # Sauvegarder annonce sur tous les records
-            ok = 0
+            from modules.stock import (
+                update_annonce_airtable,
+                update_prix_vente_lot,
+                update_etat_lot,
+            )
             etat = g.get("etat", "")
-            from modules.stock import update_annonce_airtable, update_prix_vente_lot
+            # 1. Annonce → tous les records du groupe
+            ok = 0
             for record_id in g["record_ids"]:
                 if await update_annonce_airtable(record_id, annonce_brute):
                     ok += 1
-            # Prix mis à jour sur tout le lot si modifié
+            # 2. Prix → si modifié en session
             nouveau_prix = annonce_draft.get("prix_revente") or g.get("prix_vente")
             if nouveau_prix:
                 await update_prix_vente_lot(g["record_ids"], float(nouveau_prix))
-            # État sauvegardé dans Notes si renseigné
+            # 3. État → dans Notes
             if etat:
-                from modules.stock import update_etat_lot
                 await update_etat_lot(g["record_ids"], etat)
 
             groupes[idx]["annonce"] = annonce_brute
