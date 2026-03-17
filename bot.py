@@ -161,6 +161,7 @@ async def aide(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⚙️ *CONFIG & ANALYSE*\n"
         "  🔍 `/audit` → Audit global business\n"
         "  🔍 `/audit pricing` · `sourcing` · `fiscal` · `outils` · `veille`\n"
+        "  📊 `/export hebdo` · `mensuel` · `annuel` → Google Sheets\n"
         "  🔔 `/alertes` → Config alertes opportunités\n"
         "  🔔 `/alertes seuil 7` → Changer le seuil\n"
     )
@@ -2447,6 +2448,49 @@ async def _audit_hebdo_auto(context):
 
 
 
+
+async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /export hebdo   → rapport hebdo → Google Sheets
+    /export mensuel → rapport mensuel
+    /export annuel  → rapport annuel
+    """
+    import os as _os
+    if not _os.getenv("MAKE_WEBHOOK_SHEETS"):
+        await update.message.reply_text(
+            "⚠️ *MAKE_WEBHOOK_SHEETS non configuré*\n\n"
+            "Ajoute dans Railway :\n"
+            "`MAKE_WEBHOOK_SHEETS = https://hook.eu1.make.com/...`",
+            parse_mode="Markdown"
+        )
+        return
+
+    type_rapport = context.args[0].lower() if context.args else "hebdo"
+    if type_rapport not in ("hebdo", "mensuel", "annuel"):
+        await update.message.reply_text(
+            "Usage : `/export hebdo` · `/export mensuel` · `/export annuel`",
+            parse_mode="Markdown"
+        )
+        return
+
+    thinking = await update.message.reply_text(f"📊 Export {type_rapport} vers Google Sheets...")
+    try:
+        from modules.export_sheets import exporter_rapport
+        ok, stats = await exporter_rapport(type_rapport)
+        if ok:
+            await thinking.edit_text(
+                f"✅ *Export {type_rapport} envoyé*\n"
+                f"CA : {stats.get('ca', 0):.2f}€ | "
+                f"Profit net : {stats.get('resultat_net', 0):.2f}€\n"
+                f"_Vérifie Google Sheets → Rapports Compta_",
+                parse_mode="Markdown"
+            )
+        else:
+            await thinking.edit_text("⚠️ Export échoué — vérifie MAKE_WEBHOOK_SHEETS dans Railway.")
+    except Exception as e:
+        logger.error(f"cmd_export: {e}", exc_info=True)
+        await thinking.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
+
 async def cmd_audit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /audit              → audit global
@@ -2767,6 +2811,7 @@ def main():
     app.add_handler(CommandHandler("rapport", cmd_rapport))       # /rapport | /rapport live | /rapport bilan
 
     # Config
+    app.add_handler(CommandHandler("export", cmd_export))          # Export Google Sheets
     app.add_handler(CommandHandler("audit", cmd_audit))
     app.add_handler(CommandHandler("alertes", cmd_alertes))       # Seuil alertes opportunités
 
