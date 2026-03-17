@@ -2491,23 +2491,6 @@ async def _audit_hebdo_auto(context):
         logger.error(f"Audit hebdo auto error: {e}")
 
 
-async def cmd_gsheets_init(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /gsheets_init → Initialise les en-têtes des 2 Google Sheets.
-    À utiliser UNE SEULE FOIS après création des sheets.
-    """
-    thinking = await update.message.reply_text("📊 Initialisation des Google Sheets...")
-    try:
-        from modules.gsheets import initialiser_sheets
-        result = await initialiser_sheets()
-        await thinking.edit_text(
-            f"📊 *Google Sheets initialisés*\n\n{result}\n\n"
-            f"_Les rapports seront archivés automatiquement à chaque génération._",
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        await thinking.edit_text(f"⚠️ Erreur: {e}")
-
 
 async def cmd_veille(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -2980,7 +2963,6 @@ def main():
     app.add_handler(CommandHandler("veille", cmd_veille))          # Veille intelligente
     app.add_handler(CommandHandler("export", cmd_export))          # Export Google Sheets
     app.add_handler(CommandHandler("audit", cmd_audit))
-    app.add_handler(CommandHandler("gsheets_init", cmd_gsheets_init))           # Audit & optimisation business
     app.add_handler(CommandHandler("alertes", cmd_alertes))       # Seuil alertes opportunités
 
     # ── Rétrocompat (anciens noms redirigent vers les nouvelles commandes) ───
