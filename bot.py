@@ -2,6 +2,8 @@
 ASSISTANT IA — CENTRE DE GESTION
 Bot Telegram principal — compatible Python 3.11/3.12/3.13
 """
+import sys
+print(f"🐍 Python {sys.version} — démarrage bot.py", flush=True)
 import os
 import json
 import asyncio
@@ -62,12 +64,20 @@ async def smart_reply(update: Update, context, text: str, parse_mode: str = "Mar
         return await context.bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode)
 
 
-from modules.sourcing import analyze_sourcing
-from modules.stock import create_product, get_stock_summary, find_product
-from modules.listings import generate_listing, publish_listing
-from modules.reports import generate_report
-from modules.accounting import get_financial_summary
-from config.settings import TELEGRAM_TOKEN, AUTHORIZED_USERS
+# Imports modules internes — avec protection contre les erreurs de démarrage
+try:
+    from modules.sourcing import analyze_sourcing
+    from modules.stock import create_product, get_stock_summary, find_product
+    from modules.listings import generate_listing, publish_listing
+    from modules.reports import generate_report
+    from modules.accounting import get_financial_summary
+    from config.settings import TELEGRAM_TOKEN, AUTHORIZED_USERS
+except Exception as _import_err:
+    import logging as _log
+    _log.getLogger(__name__).error(f"⚠️ Import error au démarrage: {_import_err}")
+    import os as _os
+    TELEGRAM_TOKEN = _os.getenv("TELEGRAM_TOKEN", "")
+    AUTHORIZED_USERS = []
 
 # ─── SESSIONS ────────────────────────────────────────────
 user_sessions = {}
