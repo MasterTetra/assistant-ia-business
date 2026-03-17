@@ -158,7 +158,9 @@ async def aide(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  📊 `/rapport live` → Dashboard temps réel\n"
         "  📊 `/rapport bilan` → Bilan financier complet\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "⚙️ *CONFIG*\n"
+        "⚙️ *CONFIG & ANALYSE*\n"
+        "  🔍 `/audit` → Audit global business\n"
+        "  🔍 `/audit pricing` · `sourcing` · `fiscal` · `outils` · `veille`\n"
         "  🔔 `/alertes` → Config alertes opportunités\n"
         "  🔔 `/alertes seuil 7` → Changer le seuil\n"
     )
@@ -2417,6 +2419,71 @@ async def cmd_lot_annuler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     session["lot_resultats"] = []
     await update.message.reply_text(f"❌ Lot annulé. {nb} photo(s) supprimées.")
 
+
+async def _audit_hebdo_auto(context):
+    """Audit automatique hebdomadaire — envoyé dans le canal Accounting Report."""
+    from modules.audit import generer_audit
+    from config.settings import SUPERGROUP_ID, TOPICS
+    try:
+        result = await generer_audit("global")
+        chat_id = SUPERGROUP_ID
+        thread_id = TOPICS.get("audit") or TOPICS.get("accounting_report")
+        payload = {
+            "chat_id": chat_id,
+            "text": f"📊 *AUDIT HEBDOMADAIRE AUTOMATIQUE*\n\n{result[:3800]}",
+            "parse_mode": "Markdown"
+        }
+        if thread_id:
+            payload["message_thread_id"] = thread_id
+        async with __import__("httpx").AsyncClient(timeout=30) as http:
+            await http.post(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                json=payload
+            )
+        logger.info("✅ Audit hebdomadaire automatique envoyé")
+    except Exception as e:
+        logger.error(f"Audit hebdo auto error: {e}")
+
+
+async def cmd_audit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /audit              → audit global
+    /audit pricing      → analyse des prix
+    /audit sourcing     → analyse des sources
+    /audit fiscal       → veille fiscale SAS
+    /audit outils       → optimisation process
+    /audit veille       → tendances marché
+    """
+    from modules.audit import generer_audit
+
+    type_audit = context.args[0].lower() if context.args else "global"
+
+    labels = {
+        "global":   "🔍 Audit global en cours...",
+        "pricing":  "💶 Analyse des prix...",
+        "sourcing": "🛒 Analyse du sourcing...",
+        "fiscal":   "🧾 Audit fiscal...",
+        "outils":   "⚙️ Analyse des process...",
+        "veille":   "📡 Veille marché...",
+    }
+    msg_attente = labels.get(type_audit, "🔍 Audit en cours...")
+    thinking = await update.message.reply_text(
+        f"{msg_attente}\n_⏳ ~15-20 secondes_",
+        parse_mode="Markdown"
+    )
+    try:
+        result = await generer_audit(type_audit)
+        # Découper si trop long pour Telegram (4096 chars max)
+        if len(result) > 4000:
+            await thinking.edit_text(result[:4000], parse_mode="Markdown")
+            await update.message.reply_text(result[4000:], parse_mode="Markdown")
+        else:
+            await thinking.edit_text(result, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"cmd_audit error: {e}", exc_info=True)
+        await thinking.edit_text(f"⚠️ Erreur audit: {str(e)[:200]}")
+
+
 async def cmd_alertes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /alertes          → affiche la config actuelle
@@ -2698,6 +2765,7 @@ def main():
     app.add_handler(CommandHandler("rapport", cmd_rapport))       # /rapport | /rapport live | /rapport bilan
 
     # Config
+    app.add_handler(CommandHandler("audit", cmd_audit))           # Audit & optimisation business
     app.add_handler(CommandHandler("alertes", cmd_alertes))       # Seuil alertes opportunités
 
     # ── Rétrocompat (anciens noms redirigent vers les nouvelles commandes) ───
