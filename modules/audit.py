@@ -8,6 +8,7 @@ Architecture :
   /audit outils   → optimisation process
   /audit veille   → tendances marché externes
 """
+import os
 import httpx
 import logging
 import asyncio
@@ -246,8 +247,7 @@ async def generer_audit(type_audit: str = "global") -> str:
     notes_manuelles = ""
     veille_reglem = ""
     try:
-        from modules.gsheets import lire_notes_manuelles, lire_veille_reglementaire
-        notes_manuelles = await lire_notes_manuelles()
+        notes_manuelles = ""  # gsheets non configuré
         veille_reglem = await lire_veille_reglementaire()
     except Exception as e:
         logger.warning(f"GSheets lecture ignorée: {e}")
@@ -305,8 +305,7 @@ VEILLE RÉGLEMENTAIRE EN COURS :
 
     # ── Archivage automatique dans Google Sheets ──────────────────────────────
     try:
-        from modules.gsheets import archiver_audit
-        await archiver_audit(type_audit, resultat)
+        pass  # archivage gsheets non configuré
     except Exception as e:
         logger.warning(f"GSheets archivage audit ignoré: {e}")
 
