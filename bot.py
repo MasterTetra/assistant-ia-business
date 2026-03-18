@@ -168,6 +168,8 @@ async def aide(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  🔍 `/audit pricing` · `sourcing` · `fiscal` · `outils` · `veille` · `micro` · `trimestriel`\n"
         "  📊 `/export hebdo` · `mensuel` · `annuel` → Google Sheets\n"
         "  🔍 `/veille` · `/veille reg` · `/veille techno` → Veille mensuelle\n"
+        "  📦 `/archive sync` → Sync ventes → Google Sheets\n"
+        "  📦 `/archive vente REF QTE PRIX` → Enregistrer vente\n"
         "  🔔 `/alertes` → Config alertes opportunités\n"
         "  🔔 `/alertes seuil 7` → Changer le seuil\n"
     )
@@ -2632,15 +2634,74 @@ async def cmd_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await thinking.edit_text(f"⚠️ Erreur : {e}")
 
+    elif mode == "sync":
+        thinking = await update.message.reply_text("🔄 Synchronisation ventes → Google Sheets...")
+        try:
+            from modules.archive import sync_ventes_vers_sheets
+            result = await sync_ventes_vers_sheets()
+            await thinking.edit_text(
+                f"✅ *Synchronisation terminée*\n"
+                f"  • {result.get('archives', 0)}/{result.get('total', 0)} produits archivés\n"
+                f"  • {result.get('echecs', 0)} échec(s)\n"
+                f"_Vérifie l'onglet PRODUITS ARCHIVÉS dans Google Sheets_",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            await thinking.edit_text(f"⚠️ Erreur : {e}")
+
     elif mode == "help":
         await update.message.reply_text(
             "📦 *Commandes archive :*\n"
             "  `/archive test` → test Make.com\n"
-            "  `/archive sync` → sync ventes → Google Sheets",
+            "  `/archive sync` → sync tous les vendus → Sheets\n"
+            "  `/archive vente REF QTE PRIX` → enregistre vente manuellement",
             parse_mode="Markdown"
         )
+
+    elif mode == "vente":
+        # /archive vente AV-20260316-0001 1 8.50
+        args = context.args[1:] if context.args else []
+        if len(args) < 3:
+            await update.message.reply_text(
+                "Usage : `/archive vente REF QTE PRIX`\nEx: `/archive vente AV-20260316-0001 1 8.50`",
+                parse_mode="Markdown"
+            )
+            return
+        ref = args[0]
+        try:
+            qte = int(args[1])
+            prix = float(args[2].replace(",", "."))
+        except ValueError:
+            await update.message.reply_text("⚠️ Format : `/archive vente REF QTE PRIX`", parse_mode="Markdown")
+            return
+
+        thinking = await update.message.reply_text(f"💾 Traitement vente {ref}...")
+        try:
+            from modules.archive import traiter_vente
+            result = await traiter_vente(ref=ref, qte_vendue=qte, prix_vente=prix)
+            if not result.get("ok"):
+                await thinking.edit_text(f"⚠️ {result.get('erreur', 'Erreur inconnue')}")
+                return
+
+            lot_solde = result.get("lot_solde", False)
+            msg = (
+                f"✅ *Vente enregistrée*\n"
+                f"🔖 {result['ref']} — {result['description'][:40]}\n"
+                f"📦 Qté vendue : {result['qte_vendue']} | Restant : {result['qte_restante']}\n"
+                f"💶 Prix : {result['prix_vente']}€ | Résultat net : {result['resultat_net']}€\n"
+            )
+            if lot_solde:
+                msg += f"\n🎉 *Lot soldé* — archivé dans Google Sheets + supprimé d'Airtable"
+            else:
+                msg += f"\n📊 Archivé dans Sheets VENTES"
+
+            await thinking.edit_text(msg, parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"archive vente: {e}", exc_info=True)
+            await thinking.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
+
     else:
-        await update.message.reply_text("Usage : `/archive test` ou `/archive sync`", parse_mode="Markdown")
+        await update.message.reply_text("Usage : `/archive test` · `sync` · `vente REF QTE PRIX`", parse_mode="Markdown")
 
 async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
