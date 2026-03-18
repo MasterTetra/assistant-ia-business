@@ -3209,6 +3209,17 @@ async def _scheduler_exports(app):
                 except Exception as e:
                     logger.error(f"Micro-audit auto: {e}")
 
+            # ── Archive sync quotidien 23h59 ─────────────────────────────────
+            is_2359 = (now.hour == 23 and now.minute == 59)
+            if is_2359:
+                logger.info("📦 Scheduler: archive sync automatique")
+                try:
+                    from modules.archive import sync_ventes_vers_sheets
+                    result = await sync_ventes_vers_sheets()
+                    logger.info(f"✅ Archive sync: {result.get('archives',0)}/{result.get('total',0)} archivés")
+                except Exception as e:
+                    logger.error(f"Archive sync auto: {e}")
+
             # ── Veille mensuelle : 1er du mois à 9h00 ───────────────────────
             is_1er_mois_9h = (now.day == 1 and now.hour == 9 and now.minute == 0)
             if is_1er_mois_9h:
