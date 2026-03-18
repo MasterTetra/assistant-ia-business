@@ -310,3 +310,145 @@ VEILLE RÉGLEMENTAIRE EN COURS :
         logger.warning(f"GSheets archivage audit ignoré: {e}")
 
     return header + resultat + footer
+
+
+# ── MICRO-AUDIT QUOTIDIEN ─────────────────────────────────────────────────────
+
+async def micro_audit_quotidien() -> str:
+    """
+    Surveillance quotidienne silencieuse.
+    Detecte : ventes manquantes, marge anormale, stock sans annonce +3j.
+    Retourne message si anomalie, chaine vide si tout va bien.
+    """
+    now = datetime.now(ZoneInfo("Europe/Paris"))
+    il_y_a_3j = (now - timedelta(days=3)).strftime("%Y-%m-%d")
+    il_y_a_7j = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as http:
+            resp = await http.get(
+                f"{AIRTABLE_URL}/{TABLE_PRODUITS}",
+                headers={"Authorization": f"Bearer {AIRTABLE_API_KEY}"},
+                params={
+                    "fields[]": ["Statut", "Prix achat unitaire", "Prix vente",
+                                 "Date achat", "Date vente", "Description",
+                                 "Annonce générée", "Référence gestion"],
+                    "maxRecords": 200,
+                }
+            )
+        records = [r["fields"] for r in resp.json().get("records", [])]
+    except Exception as e:
+        logger.error(f"micro_audit fetch: {e}")
+        return ""
+
+    anomalies = []
+
+    # 1. Aucune vente depuis 3+ jours avec stock en ligne
+    en_ligne = [f for f in records if f.get("Statut") == "en ligne"]
+    vendus_recents = [f for f in records
+                      if f.get("Statut") == "vendu"
+                      and (f.get("Date vente") or "") >= il_y_a_3j]
+    if en_ligne and not vendus_recents:
+        nb = len(en_ligne)
+        anomalies.append(f"📉 *Aucune vente depuis 3 jours* — {nb} article(s) en ligne sans mouvement")
+
+    # 2. Marge anormalement basse < 20%
+    marges_faibles = []
+    for f in records:
+        if f.get("Statut") == "vendu" and (f.get("Date vente") or "") >= il_y_a_7j:
+            pv = float(f.get("Prix vente") or 0)
+            pa = float(f.get("Prix achat unitaire") or 0)
+            if pv > 0 and pa > 0:
+                marge = (pv - pa) / pv * 100
+                if marge < 20:
+                    desc = f.get("Description", "?")[:30]
+                    marges_faibles.append(f"{desc} ({marge:.0f}%)")
+    if marges_faibles:
+        nb = len(marges_faibles)
+        detail = "\n".join(f"  - {m}" for m in marges_faibles[:3])
+        anomalies.append(f"⚠️ *Marge < 20%* sur {nb} vente(s) recente(s) :\n{detail}")
+
+    # 3. Stock sans annonce depuis +3j
+    sans_annonce = list(dict.fromkeys([
+        f.get("Description", "?")[:35]
+        for f in records
+        if f.get("Statut") == "acheté"
+        and not f.get("Annonce générée")
+        and (f.get("Date achat") or "") <= il_y_a_3j
+    ]))
+    if sans_annonce:
+        nb = len(sans_annonce)
+        detail = "\n".join(f"  - {a}" for a in sans_annonce[:3])
+        suite = f"\n  _...et {nb-3} autres_" if nb > 3 else ""
+        anomalies.append(f"📝 *{nb} article(s) sans annonce depuis +3j* :\n{detail}{suite}")
+
+    if not anomalies:
+        return ""
+
+    date_str = now.strftime("%d/%m/%Y")
+    corps = "\n\n".join(anomalies)
+    return (
+        f"🔴 *MICRO-AUDIT — {date_str}*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"{corps}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"_Action requise_"
+    )
+
+
+# ── AUDIT TRIMESTRIEL ─────────────────────────────────────────────────────────
+
+async def generer_audit_trimestriel() -> str:
+    """Audit strategique trimestriel : croissance, scalabilite, fiscalite, automatisation."""
+    now = datetime.now(ZoneInfo("Europe/Paris"))
+    data = await _fetch_donnees_business()
+    stats = _compiler_stats(data["records"])
+
+    mois_str = now.strftime("%B %Y")
+    date_str = now.strftime("%d/%m/%Y")
+    nb_ventes = len(stats["vendus_30j"])
+    nb_bloques = len(stats["stock_bloque"])
+    nb_rapides = len(stats["rotation_rapide"])
+    ca = round(stats["ca_30j"] * 3, 2)
+
+    prompt = (
+        f"Tu es consultant business pour une SAS française de revente d'occasion.\n"
+        f"Audit STRATEGIQUE TRIMESTRIEL — {mois_str}\n\n"
+        f"Données 30 derniers jours x3 (estimation trimestre) :\n"
+        f"- CA estimé : {ca}€\n"
+        f"- Nb ventes estimé : {nb_ventes * 3}\n"
+        f"- Articles bloqués >30j : {nb_bloques}\n"
+        f"- Rotation rapide <7j : {nb_rapides}\n"
+        f"- Plateformes : {stats['plateformes']}\n\n"
+        f"Analyse ces 4 axes strategiques :\n"
+        f"1. CROISSANCE : trajectoire, potentiel, freins\n"
+        f"2. SCALABILITE : limites et industrialisation possible\n"
+        f"3. FISCALITE : optimisations SAS ce trimestre\n"
+        f"4. AUTOMATISATION : taches repetitives a automatiser\n\n"
+        f"Format pour chaque point :\n"
+        f"AXE: titre\n"
+        f"Probleme: ...\n"
+        f"Solution: ...\n"
+        f"Impact: ...\n"
+        f"Priorite: HIGH/MEDIUM/LOW"
+    )
+
+    try:
+        r = _get_client().messages.create(
+            model=CLAUDE_MODEL, max_tokens=1500,
+            system=SYSTEM_AUDIT,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        analyse = r.content[0].text if r.content else "Analyse indisponible"
+    except Exception as e:
+        logger.error(f"audit trimestriel IA: {e}")
+        analyse = f"Erreur IA: {e}"
+
+    return (
+        f"🔵 *AUDIT TRIMESTRIEL — {mois_str.upper()}*\n"
+        f"📅 {date_str}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{analyse}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"_Prochain audit trimestriel dans 3 mois_"
+    )
