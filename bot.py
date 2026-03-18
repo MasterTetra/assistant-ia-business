@@ -167,6 +167,7 @@ async def aide(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  🔍 `/audit` → Audit global business\n"
         "  🔍 `/audit pricing` · `sourcing` · `fiscal` · `outils` · `veille`\n"
         "  📊 `/export hebdo` · `mensuel` · `annuel` → Google Sheets\n"
+        "  🔍 `/veille` · `/veille reg` · `/veille techno` → Veille mensuelle\n"
         "  🔔 `/alertes` → Config alertes opportunités\n"
         "  🔔 `/alertes seuil 7` → Changer le seuil\n"
     )
@@ -2455,6 +2456,53 @@ async def _audit_hebdo_auto(context):
 
 
 
+
+async def cmd_veille(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /veille          → veille complète (réglementaire + techno)
+    /veille reg      → réglementaire uniquement
+    /veille techno   → technologique uniquement
+    """
+    mode = context.args[0].lower() if context.args else "all"
+    thinking = await update.message.reply_text(
+        "🔍 Veille en cours (recherche web + analyse IA)...\n⏳ ~30 secondes"
+    )
+    try:
+        from modules.veille import generer_veille_mensuelle, _appel_claude_web
+        from modules.veille import PROMPT_VEILLE_REGLEMENTAIRE, PROMPT_VEILLE_TECHNO
+        from modules.veille import _construire_et_envoyer_message
+        from datetime import datetime
+        try:
+            from zoneinfo import ZoneInfo
+        except ImportError:
+            from backports.zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("Europe/Paris"))
+        MOIS_FR = {1:"Janvier",2:"Février",3:"Mars",4:"Avril",5:"Mai",6:"Juin",
+                   7:"Juillet",8:"Août",9:"Septembre",10:"Octobre",11:"Novembre",12:"Décembre"}
+        mois = MOIS_FR[now.month]
+
+        if mode == "all":
+            await generer_veille_mensuelle()
+            await thinking.edit_text(
+                "✅ *Veille mensuelle envoyée*\n_Résumé dans le topic Audit_",
+                parse_mode="Markdown"
+            )
+        elif mode == "reg":
+            items = await _appel_claude_web(
+                PROMPT_VEILLE_REGLEMENTAIRE.format(mois=mois, annee=now.year))
+            await _construire_et_envoyer_message(items, [], mois, now.year, now.strftime("%d/%m/%Y"))
+            await thinking.edit_text(f"✅ Veille réglementaire — {len(items)} point(s)", parse_mode="Markdown")
+        elif mode == "techno":
+            items = await _appel_claude_web(
+                PROMPT_VEILLE_TECHNO.format(mois=mois, annee=now.year))
+            await _construire_et_envoyer_message([], items, mois, now.year, now.strftime("%d/%m/%Y"))
+            await thinking.edit_text(f"✅ Veille technologique — {len(items)} point(s)", parse_mode="Markdown")
+        else:
+            await thinking.edit_text("Usage : `/veille` · `/veille reg` · `/veille techno`", parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"cmd_veille: {e}", exc_info=True)
+        await thinking.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
+
 async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /export hebdo   → rapport hebdo → Google Sheets
@@ -2821,6 +2869,7 @@ def main():
     app.add_handler(CommandHandler("rapport", cmd_rapport))       # /rapport | /rapport live | /rapport bilan
 
     # Config
+    app.add_handler(CommandHandler("veille", cmd_veille))          # Veille mensuelle
     app.add_handler(CommandHandler("export", cmd_export))          # Export Google Sheets
     app.add_handler(CommandHandler("audit", cmd_audit))
     app.add_handler(CommandHandler("alertes", cmd_alertes))       # Seuil alertes opportunités
