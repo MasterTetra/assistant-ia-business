@@ -2936,8 +2936,13 @@ async def _run_all(application):
     from modules.webhook_server import start_webhook_server
     import asyncio as _aio
     port = int(os.getenv("PORT", "8080"))
-
-    webhook_runner = await start_webhook_server(chat_id=2134299043, port=port)
+    logger.info("🔧 _run_all démarré, port=%s", port)
+    try:
+        webhook_runner = await start_webhook_server(chat_id=2134299043, port=port)
+        logger.info("🔧 webhook_server démarré OK")
+    except Exception as e:
+        logger.error(f"💥 CRASH webhook_server: {e}", exc_info=True)
+        raise
 
     try:
         from modules.ebay_setup import setup_notifications
