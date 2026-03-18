@@ -99,18 +99,25 @@ async def _envoyer_telegram(message: str):
 
 async def _envoyer_make_veille(event: str, items: list, date_veille: str):
     """Envoie les items vers Make.com pour archivage Google Sheets."""
-    if not MAKE_WEBHOOK_SHEETS or not items:
+    import os as _os
+    webhook = _os.getenv("MAKE_WEBHOOK_SHEETS", "")
+    secret = _os.getenv("WEBHOOK_SECRET", "cashbert-secret-2026")
+    if not webhook or not items:
+        logger.warning(f"_envoyer_make_veille: webhook vide ou items vides ({event})")
         return
     try:
+        payload = {
+            "secret": secret,
+            "event": event,
+            "date_veille": date_veille,
+            "items": items,
+        }
+        logger.info(f"📤 Envoi Make.com {event} — {len(items)} item(s)")
         async with httpx.AsyncClient(timeout=20) as http:
-            await http.post(MAKE_WEBHOOK_SHEETS, json={
-                "secret": WEBHOOK_SECRET,
-                "event": event,
-                "date_veille": date_veille,
-                "items": items,
-            })
+            resp = await http.post(webhook, json=payload)
+        logger.info(f"✅ Make.com {event} → {resp.status_code}")
     except Exception as e:
-        logger.error(f"_envoyer_make_veille: {e}")
+        logger.error(f"_envoyer_make_veille {event}: {e}")
 
 
 async def generer_veille_mensuelle():
