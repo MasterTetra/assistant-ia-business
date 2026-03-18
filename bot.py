@@ -1,7 +1,7 @@
 """
 ASSISTANT IA — CENTRE DE GESTION
 Bot Telegram principal — compatible Python 3.11/3.12/3.13
-Build: FORCE_REBUILD_NOW
+Build: 1773833971
 """
 import os
 import json
@@ -2793,8 +2793,12 @@ async def cmd_statut(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     if not TELEGRAM_TOKEN:
         raise ValueError("❌ TELEGRAM_TOKEN manquant")
-
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    try:
+        app = Application.builder().token(TELEGRAM_TOKEN).build()
+    except Exception as e:
+        logger.error(f"💥 CRASH Application.builder: {e}", exc_info=True)
+        raise
 
     # ── Commandes actives ────────────────────────────────────────────────────
     app.add_handler(CommandHandler("start", start))
@@ -2974,15 +2978,7 @@ async def _run_all(application):
 
 
     import asyncio as _asyncio
-    logger.info("🔧 Lancement de _asyncio.run(_run_all)...")
-    try:
-        _asyncio.run(_run_all(app))
-    except Exception as e:
-        logger.error(f"💥 CRASH _asyncio.run: {type(e).__name__}: {e}", exc_info=True)
-        raise
-    except SystemExit as e:
-        logger.error(f"💥 SystemExit: {e}")
-        raise
+    _asyncio.run(_run_all(app))
 
 if __name__ == "__main__":
     main()
