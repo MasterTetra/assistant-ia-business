@@ -165,7 +165,7 @@ async def aide(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "━━━━━━━━━━━━━━━━━━━━\n"
         "⚙️ *CONFIG & ANALYSE*\n"
         "  🔍 `/audit` → Audit global business\n"
-        "  🔍 `/audit pricing` · `sourcing` · `fiscal` · `outils` · `veille`\n"
+        "  🔍 `/audit pricing` · `sourcing` · `fiscal` · `outils` · `veille` · `micro` · `trimestriel`\n"
         "  📊 `/export hebdo` · `mensuel` · `annuel` → Google Sheets\n"
         "  🔍 `/veille` · `/veille reg` · `/veille techno` → Veille mensuelle\n"
         "  🔔 `/alertes` → Config alertes opportunités\n"
@@ -3043,7 +3043,27 @@ async def _scheduler_exports(app):
                         f"_Archivé dans Google Sheets → Annuel_"
                     )
 
-            # ── Veille mensuelle : 1er du mois à 9h00 ────────────────────
+            # ── Micro-audit quotidien 8h00 ────────────────────────────────
+            is_8h_quotidien = (now.hour == 8 and now.minute == 0)
+            if is_8h_quotidien:
+                try:
+                    from modules.audit import micro_audit_quotidien
+                    msg_micro = await micro_audit_quotidien()
+                    if msg_micro:  # Silencieux si aucune anomalie
+                        logger.info("🔴 Micro-audit: anomalie détectée")
+                        async with httpx.AsyncClient(timeout=15) as http:
+                            await http.post(
+                                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                                json={"chat_id": SUPERGROUP_ID,
+                                      "message_thread_id": TOPICS.get("audit"),
+                                      "text": msg_micro, "parse_mode": "Markdown"}
+                            )
+                    else:
+                        logger.info("✅ Micro-audit: aucune anomalie")
+                except Exception as e:
+                    logger.error(f"Micro-audit auto: {e}")
+
+            # ── Veille mensuelle : 1er du mois à 9h00 ───────────────────────
             is_1er_mois_9h = (now.day == 1 and now.hour == 9 and now.minute == 0)
             if is_1er_mois_9h:
                 logger.info("🔍 Scheduler: veille mensuelle automatique")
@@ -3053,6 +3073,41 @@ async def _scheduler_exports(app):
                     logger.info("✅ Veille mensuelle envoyée")
                 except Exception as e:
                     logger.error(f"Veille mensuelle auto: {e}")
+
+            # ── Audit mensuel : 1er du mois à 9h30 ──────────────────────────
+            is_1er_mois_930h = (now.day == 1 and now.hour == 9 and now.minute == 30)
+            if is_1er_mois_930h:
+                logger.info("📊 Scheduler: audit mensuel automatique")
+                try:
+                    from modules.audit import generer_audit
+                    result = await generer_audit("global")
+                    async with httpx.AsyncClient(timeout=15) as http:
+                        await http.post(
+                            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                            json={"chat_id": SUPERGROUP_ID,
+                                  "message_thread_id": TOPICS.get("accounting_report"),
+                                  "text": result[:4000], "parse_mode": "Markdown"}
+                        )
+                except Exception as e:
+                    logger.error(f"Audit mensuel auto: {e}")
+
+            # ── Audit trimestriel : 1er jan/avr/juil/oct à 9h30 ─────────────
+            is_trim = (now.day == 1 and now.month in (1, 4, 7, 10)
+                       and now.hour == 9 and now.minute == 30)
+            if is_trim:
+                logger.info("🔵 Scheduler: audit trimestriel automatique")
+                try:
+                    from modules.audit import generer_audit_trimestriel
+                    result = await generer_audit_trimestriel()
+                    async with httpx.AsyncClient(timeout=15) as http:
+                        await http.post(
+                            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                            json={"chat_id": SUPERGROUP_ID,
+                                  "message_thread_id": TOPICS.get("audit"),
+                                  "text": result[:4000], "parse_mode": "Markdown"}
+                        )
+                except Exception as e:
+                    logger.error(f"Audit trimestriel auto: {e}")
 
         except asyncio.CancelledError:
             break
