@@ -2457,13 +2457,67 @@ async def _audit_hebdo_auto(context):
 
 
 
+
 async def cmd_veille(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /veille          → veille complète (réglementaire + techno)
     /veille reg      → réglementaire uniquement
     /veille techno   → technologique uniquement
+    /veille test     → envoie payloads de test à Make.com pour configurer les onglets
     """
     mode = context.args[0].lower() if context.args else "all"
+
+    # ── Mode test : envoie des données fictives à Make.com ────────────────────
+    if mode == "test":
+        thinking = await update.message.reply_text("🧪 Envoi payloads de test vers Make.com...")
+        try:
+            import os as _os
+            webhook = _os.getenv("MAKE_WEBHOOK_SHEETS", "")
+            if not webhook:
+                await thinking.edit_text("⚠️ MAKE_WEBHOOK_SHEETS non configuré")
+                return
+
+            payload_reg = {
+                "secret": "cashbert-secret-2026",
+                "event": "veille_reglementaire",
+                "date_veille": "18/03/2026",
+                "items": [{
+                    "date": "03/2026", "type": "TVA",
+                    "sujet": "TVA marge Art.297A — test",
+                    "resume": "Payload de test pour configurer Make.com.",
+                    "impact": "HIGH",
+                    "action": "Supprimer cette ligne après configuration",
+                    "source": "Test"
+                }]
+            }
+            payload_tech = {
+                "secret": "cashbert-secret-2026",
+                "event": "veille_techno",
+                "date_veille": "18/03/2026",
+                "items": [{
+                    "date": "03/2026", "type": "IA",
+                    "sujet": "Outil IA test",
+                    "resume": "Payload de test pour configurer Make.com.",
+                    "impact": "HIGH", "applicable": "OUI",
+                    "action": "Supprimer cette ligne après configuration",
+                    "source": "Test", "score": 8.5
+                }]
+            }
+            async with httpx.AsyncClient(timeout=15) as http:
+                r1 = await http.post(webhook, json=payload_reg)
+                r2 = await http.post(webhook, json=payload_tech)
+
+            await thinking.edit_text(
+                f"✅ Payloads envoyés à Make.com\n"
+                f"  • veille_reglementaire : {r1.status_code}\n"
+                f"  • veille_techno : {r2.status_code}\n\n"
+                f"_Maintenant dans Make.com → mappe les colonnes des nouveaux chemins_"
+            )
+        except Exception as e:
+            await thinking.edit_text(f"⚠️ Erreur : {e}")
+        return
+
+    # ── Mode normal ───────────────────────────────────────────────────────────
     thinking = await update.message.reply_text(
         "🔍 Veille en cours (recherche web + analyse IA)...\n⏳ ~30 secondes"
     )
@@ -2498,10 +2552,11 @@ async def cmd_veille(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _construire_et_envoyer_message([], items, mois, now.year, now.strftime("%d/%m/%Y"))
             await thinking.edit_text(f"✅ Veille technologique — {len(items)} point(s)", parse_mode="Markdown")
         else:
-            await thinking.edit_text("Usage : `/veille` · `/veille reg` · `/veille techno`", parse_mode="Markdown")
+            await thinking.edit_text("Usage : `/veille` · `/veille reg` · `/veille techno` · `/veille test`", parse_mode="Markdown")
     except Exception as e:
         logger.error(f"cmd_veille: {e}", exc_info=True)
         await thinking.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
+
 
 async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
