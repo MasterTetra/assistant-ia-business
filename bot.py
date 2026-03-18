@@ -2851,7 +2851,15 @@ def main():
     from telegram.ext import TypeHandler
     app.add_handler(TypeHandler(Update, debug_all), group=1)
 
-    logger.info("🤖 Bot démarré avec succès !")
+    logger.info("🤖 Bot démarré — appel _asyncio.run...")
+    import sys as _sys, asyncio as _asyncio, traceback as _tb
+    try:
+        _asyncio.run(_run_all(app))
+    except BaseException as _e:
+        print(f"\n\nFATAL ERROR: {type(_e).__name__}: {_e}", flush=True)
+        _tb.print_exc(file=_sys.stdout)
+        _sys.stdout.flush()
+        _sys.exit(1)
 
     
 async def _scheduler_exports(app):
@@ -2977,17 +2985,7 @@ async def _run_all(application):
             await webhook_runner.cleanup()
 
 
-    import asyncio as _asyncio
-    import sys as _sys
-    import traceback as _tb
-    try:
-        _asyncio.run(_run_all(app))
-    except Exception as _e:
-        _tb.print_exc()
-        _sys.stderr.flush()
-        _sys.stdout.flush()
-        print(f"FATAL: {type(_e).__name__}: {_e}", flush=True)
-        _sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
