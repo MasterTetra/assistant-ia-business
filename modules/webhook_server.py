@@ -563,3 +563,132 @@ async def start_webhook_server(chat_id: int, port: int = 8080):
     await site.start()
     logger.info(f"✅ Webhook server démarré sur port {port}")
     return runner
+
+
+async def traiter_vente_confirmee(payload: dict) -> str:
+    """
+    Reçoit une vente confirmée depuis Make.com (eBay/LBC/Vinted).
+    Déclenche traiter_vente() : archive Sheets + décrément Airtable + suppression si soldé.
+
+    Payload attendu :
+    {
+      "secret": "cashbert-secret-2026",
+      "event": "vente_confirmee",
+      "source": "ebay" | "lbc" | "vinted",
+      "ref": "AV-20260316-0001",          ← optionnel si titre fourni
+      "titre": "Porte-clé Renault Sport",  ← utilisé si pas de ref
+      "qte": 1,
+      "prix_vente": 8.50,
+      "frais_plateforme": 1.10,           ← optionnel (défaut 13%)
+      "frais_transport": 0.0              ← optionnel
+    }
+    """
+    secret = payload.get("secret", "")
+    if secret != WEBHOOK_SECRET:
+        logger.warning("vente_confirmee: secret invalide")
+        return "unauthorized"
+
+    source    = payload.get("source", "inconnu").lower()
+    ref       = payload.get("ref", "").strip()
+    titre     = payload.get("titre", "").strip()
+    qte       = int(payload.get("qte") or 1)
+    prix      = float(payload.get("prix_vente") or 0)
+    frais_pf  = float(payload.get("frais_plateforme") or 0)
+    frais_tr  = float(payload.get("frais_transport") or 0)
+
+    if prix <= 0:
+        logger.warning(f"vente_confirmee: prix invalide ({prix})")
+        return "invalid_price"
+
+    if not ref and not titre:
+        logger.warning("vente_confirmee: ni ref ni titre fourni")
+        return "missing_ref"
+
+    source_label = {"lbc": "LeBonCoin", "leboncoin": "LeBonCoin",
+                    "vinted": "Vinted", "ebay": "eBay"}.get(source, source.upper())
+
+    logger.info(f"💰 Vente confirmée [{source_label}]: ref={ref or titre[:30]} — {prix}€ x{qte}")
+
+    try:
+        from modules.archive import traiter_vente, _get_lot_by_description
+
+        # Si pas de ref, chercher par titre dans Airtable
+        if not ref and titre:
+            lot = await _get_lot_by_description(titre)
+            if lot:
+                ref = lot.get("Référence gestion", "")
+
+        if not ref:
+            logger.warning(f"vente_confirmee: lot introuvable pour '{titre}'")
+            # Notification d'alerte dans Telegram
+            await _notif_telegram(
+                f"⚠️ *Vente non traitée*\n"
+                f"Plateforme : {source_label}\n"
+                f"Article : {titre[:50]}\n"
+                f"Prix : {prix}€\n"
+                f"_Lot introuvable dans Airtable — traiter manuellement_",
+                topic="sales"
+            )
+            return "lot_not_found"
+
+        result = await traiter_vente(
+            ref=ref,
+            qte_vendue=qte,
+            prix_vente=prix,
+            plateforme=source_label,
+            frais_plateforme=frais_pf,
+            frais_transport=frais_tr,
+        )
+
+        if not result.get("ok"):
+            logger.error(f"traiter_vente échoué: {result.get('erreur')}")
+            return "error"
+
+        # Notification Telegram dans Sales
+        lot_solde = result.get("lot_solde", False)
+        desc = result.get("description", "?")[:40]
+        restant = result.get("qte_restante", 0)
+        marge = result.get("marge_brute", 0)
+        net = result.get("resultat_net", 0)
+
+        emoji = "🎉" if lot_solde else "✅"
+        msg = (
+            f"{emoji} *VENTE {source_label.upper()}*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"📦 {desc}\n"
+            f"🔖 {ref} × {qte}\n"
+            f"💶 Prix : {prix}€ | Net : {net}€\n"
+            f"💰 Marge brute : {marge}€\n"
+        )
+        if lot_solde:
+            msg += f"🏁 *Lot soldé* — archivé + supprimé Airtable\n"
+        else:
+            msg += f"📊 Restant : {restant} unité(s)\n"
+        msg += f"━━━━━━━━━━━━━━━━━━━━"
+
+        await _notif_telegram(msg, topic="sales")
+        return "ok"
+
+    except Exception as e:
+        logger.error(f"traiter_vente_confirmee: {e}", exc_info=True)
+        return "error"
+
+
+async def _notif_telegram(msg: str, topic: str = "sales"):
+    """Envoie une notification Telegram dans le bon topic."""
+    import os as _os
+    from config.settings import SUPERGROUP_ID, TOPICS, TELEGRAM_TOKEN as TG_TOKEN
+    thread_id = TOPICS.get(f"sales_notifications" if topic == "sales" else topic)
+    try:
+        async with __import__("httpx").AsyncClient(timeout=15) as http:
+            await http.post(
+                f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
+                json={
+                    "chat_id": SUPERGROUP_ID,
+                    "message_thread_id": thread_id,
+                    "text": msg,
+                    "parse_mode": "Markdown"
+                }
+            )
+    except Exception as e:
+        logger.error(f"_notif_telegram: {e}")
