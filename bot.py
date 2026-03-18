@@ -1,7 +1,7 @@
 """
 ASSISTANT IA — CENTRE DE GESTION
 Bot Telegram principal — compatible Python 3.11/3.12/3.13
-Build: 1773833971
+Build: FORCE_REBUILD_NOW
 """
 import os
 import json
