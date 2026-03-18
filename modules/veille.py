@@ -38,77 +38,20 @@ def _get_client():
 
 # ── PROMPTS ───────────────────────────────────────────────────────────────────
 
-PROMPT_VEILLE_REGLEMENTAIRE = """
-Tu es un expert juridique et fiscal spécialisé dans les SAS françaises de revente d'occasion.
+PROMPT_VEILLE_REGLEMENTAIRE = (
+    "Tu es expert fiscal SAS france. Veille reglementaire {mois} {annee}.\n"
+    "Recherche ce qui impacte une SAS de revente occasion : TVA marge Art.297A, IS PME, DAC7, obligations plateformes.\n"
+    "Reponds en JSON strict : [{{\"date\":\"{mois}/{annee}\",\"type\":\"TVA|IS|LEGAL\",\"sujet\":\"titre\",\"resume\":\"2 phrases\",\"impact\":\"HIGH|MEDIUM|LOW\",\"action\":\"action\",\"source\":\"source\"}}]\n"
+    "Si rien de notable : []. JSON seul."
+)
 
-Effectue une veille réglementaire pour le mois de {mois} {annee}.
-
-Recherche et analyse les évolutions sur ces sujets UNIQUEMENT liés à l'activité :
-1. TVA sur marge (Art.297A CGI) — jurisprudence, modifications, précisions BOFiP
-2. Obligations déclaratives plateformes numériques (DAC7, directive UE)
-3. IS PME/SAS — taux, seuils, nouveautés
-4. Réglementation e-commerce et marketplaces en France
-5. Obligations légales revente occasion (TRACFIN si applicable)
-6. CFE, cotisations sociales dirigeant SAS
-7. Seuils TVA, franchise en base
-
-FILTRE STRICT : uniquement ce qui impacte directement une SAS de revente d'occasion française.
-
-Pour chaque point trouvé, réponds en JSON strict :
-[
-  {{
-    "date": "{mois}/{annee}",
-    "type": "TVA|IS|LEGAL|PLATEFORME|SOCIAL|AUTRE",
-    "sujet": "titre court (max 60 caractères)",
-    "resume": "description précise en 2 phrases",
-    "impact": "HIGH|MEDIUM|LOW",
-    "action": "action concrète à prendre",
-    "source": "nom de la source (BOFiP, Légifrance, etc.)"
-  }}
-]
-
-Si aucune nouveauté significative ce mois : retourne [].
-Retourne UNIQUEMENT le JSON, sans texte avant ou après.
-"""
-
-PROMPT_VEILLE_TECHNO = """
-Tu es un expert en optimisation business et technologie pour la revente d'occasion.
-
-Effectue une veille technologique pour le mois de {mois} {annee} sur ces sujets :
-
-1. NOUVEAUTÉS IA applicables au business de revente :
-   - Outils IA de pricing automatique
-   - Vision IA pour identification/estimation objets
-   - Chatbots et automatisation relation client
-   - Outils IA de génération d'annonces
-
-2. FISCALITÉ SAS / TVA MARGE :
-   - Nouveaux logiciels comptables adaptés SAS revente
-   - Outils de calcul TVA marge automatisé
-   - Solutions de reporting fiscal automatisé
-
-FILTRE STRICT : pertinence directe avec la revente d'occasion + SAS française.
-Score chaque item : (impact × pertinence × facilité_mise_en_place) / 3
-Ne garder que score ≥ 6/10.
-
-Format JSON strict :
-[
-  {{
-    "date": "{mois}/{annee}",
-    "type": "IA|FISCAL|OUTIL|AUTOMATISATION",
-    "sujet": "titre court (max 60 caractères)",
-    "resume": "description en 2 phrases",
-    "impact": "HIGH|MEDIUM|LOW",
-    "applicable": "OUI|NON|PARTIEL",
-    "action": "action concrète",
-    "source": "source",
-    "score": 8.5
-  }}
-]
-
-Si aucune nouveauté pertinente : retourne [].
-Retourne UNIQUEMENT le JSON, sans texte avant ou après.
-"""
+PROMPT_VEILLE_TECHNO = (
+    "Tu es expert optimisation business revente occasion. Veille techno {mois} {annee}.\n"
+    "Cherche outils IA pricing/annonces, logiciels SAS TVA marge, automatisation eBay/Vinted.\n"
+    "Score = impact x pertinence x facilite / 3. Garder score >= 6.\n"
+    "Reponds en JSON strict : [{{\"date\":\"{mois}/{annee}\",\"type\":\"IA|OUTIL\",\"sujet\":\"titre\",\"resume\":\"2 phrases\",\"impact\":\"HIGH|MEDIUM|LOW\",\"applicable\":\"OUI|NON\",\"action\":\"action\",\"source\":\"source\",\"score\":8.5}}]\n"
+    "Si rien : []. JSON seul."
+)
 
 
 # ── FONCTIONS PRINCIPALES ─────────────────────────────────────────────────────
