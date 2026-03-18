@@ -2558,6 +2558,90 @@ async def cmd_veille(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await thinking.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
 
 
+
+async def cmd_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /archive test  → envoie payloads de test à Make.com pour configurer les onglets
+    /archive sync  → synchronise tous les produits vendus vers Google Sheets
+    """
+    mode = context.args[0].lower() if context.args else "help"
+
+    if mode == "test":
+        thinking = await update.message.reply_text("🧪 Envoi payloads test vers Make.com...")
+        try:
+            import os as _os
+            webhook = _os.getenv("MAKE_WEBHOOK_SHEETS", "")
+            if not webhook:
+                await thinking.edit_text("⚠️ MAKE_WEBHOOK_SHEETS non configuré")
+                return
+
+            # Payload test vente_archiver
+            payload_vente = {
+                "secret": "cashbert-secret-2026",
+                "event": "vente_archiver",
+                "data": {
+                    "date_vente": "18/03/2026",
+                    "reference": "AV-20260316-0001",
+                    "description": "Porte-clé Renault Sport",
+                    "qte_vendue": 1,
+                    "prix_achat_unitaire": 0.10,
+                    "prix_vente": 8.50,
+                    "marge_brute": 8.40,
+                    "frais_plateforme": 1.10,
+                    "frais_transport": 0.0,
+                    "resultat_net": 6.12,
+                    "plateforme": "eBay",
+                    "statut": "vendu"
+                }
+            }
+
+            # Payload test produit_archiver
+            payload_produit = {
+                "secret": "cashbert-secret-2026",
+                "event": "produit_archiver",
+                "data": {
+                    "reference": "AV-20260316-0001",
+                    "description": "Porte-clé Renault Sport",
+                    "prix_achat_total": 6.0,
+                    "prix_achat_unitaire": 0.10,
+                    "qte_totale": 60,
+                    "qte_vendue": 60,
+                    "prix_vente": 8.50,
+                    "date_achat": "16/03/2026",
+                    "date_vente": "18/03/2026",
+                    "plateforme": "eBay",
+                    "frais_plateforme": 66.30,
+                    "frais_transport": 0.0,
+                    "source": "Brocante",
+                    "statut": "vendu",
+                    "notes": "Etat : Très bon état",
+                    "annonce_generee": "TITRE: Porte-clé Renault Sport..."
+                }
+            }
+
+            async with httpx.AsyncClient(timeout=15) as http:
+                r1 = await http.post(webhook, json=payload_vente)
+                r2 = await http.post(webhook, json=payload_produit)
+
+            await thinking.edit_text(
+                f"✅ Payloads envoyés\n"
+                f"  • vente_archiver : {r1.status_code}\n"
+                f"  • produit_archiver : {r2.status_code}\n\n"
+                f"_Dans Make.com → configure les 2 nouveaux chemins du Router_"
+            )
+        except Exception as e:
+            await thinking.edit_text(f"⚠️ Erreur : {e}")
+
+    elif mode == "help":
+        await update.message.reply_text(
+            "📦 *Commandes archive :*\n"
+            "  `/archive test` → test Make.com\n"
+            "  `/archive sync` → sync ventes → Google Sheets",
+            parse_mode="Markdown"
+        )
+    else:
+        await update.message.reply_text("Usage : `/archive test` ou `/archive sync`", parse_mode="Markdown")
+
 async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     /export hebdo   → rapport hebdo → Google Sheets
@@ -2925,6 +3009,7 @@ def main():
 
     # Config
     app.add_handler(CommandHandler("veille", cmd_veille))          # Veille mensuelle
+    app.add_handler(CommandHandler("archive", cmd_archive))         # Archive Google Sheets
     app.add_handler(CommandHandler("export", cmd_export))          # Export Google Sheets
     app.add_handler(CommandHandler("audit", cmd_audit))
     app.add_handler(CommandHandler("alertes", cmd_alertes))       # Seuil alertes opportunités
