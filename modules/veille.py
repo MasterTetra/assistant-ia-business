@@ -57,12 +57,11 @@ PROMPT_VEILLE_TECHNO = (
 # ── FONCTIONS PRINCIPALES ─────────────────────────────────────────────────────
 
 async def _appel_claude_web(prompt: str) -> list:
-    """Appel Claude avec web search, retourne une liste d'items JSON."""
+    """Appel Claude (sans web search pour éviter rate limit), retourne une liste d'items JSON."""
     try:
         r = _get_client().messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=2000,
-            tools=[{"type": "web_search_20250305", "name": "web_search"}],
+            max_tokens=1000,
             messages=[{"role": "user", "content": prompt}]
         )
         raw = ""
@@ -138,10 +137,18 @@ async def generer_veille_mensuelle():
     items_tech = await _appel_claude_web(prompt_tech)
 
     # ── 3. Archivage Google Sheets ────────────────────────────────────────────
-    if items_reg:
-        await _envoyer_make_veille("veille_reglementaire", items_reg, date_veille)
-    if items_tech:
-        await _envoyer_make_veille("veille_techno", items_tech, date_veille)
+    # Toujours envoyer une ligne bilan pour la traçabilité
+    if not items_reg:
+        items_reg = [{"date": date_veille, "type": "BILAN", "sujet": f"Veille {mois_label} {now.year}",
+                      "resume": "Aucune nouveaute significative ce mois.", "impact": "LOW",
+                      "action": "RAS", "source": "Cashbert Auto"}]
+    if not items_tech:
+        items_tech = [{"date": date_veille, "type": "BILAN", "sujet": f"Veille techno {mois_label} {now.year}",
+                       "resume": "Aucune nouveaute pertinente ce mois.", "impact": "LOW",
+                       "applicable": "NON", "action": "RAS", "source": "Cashbert Auto", "score": 0}]
+
+    await _envoyer_make_veille("veille_reglementaire", items_reg, date_veille)
+    await _envoyer_make_veille("veille_techno", items_tech, date_veille)
 
     # ── 4. Message Telegram ───────────────────────────────────────────────────
     await _construire_et_envoyer_message(
