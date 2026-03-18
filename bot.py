@@ -3043,6 +3043,17 @@ async def _scheduler_exports(app):
                         f"_Archivé dans Google Sheets → Annuel_"
                     )
 
+            # ── Veille mensuelle : 1er du mois à 9h00 ────────────────────
+            is_1er_mois_9h = (now.day == 1 and now.hour == 9 and now.minute == 0)
+            if is_1er_mois_9h:
+                logger.info("🔍 Scheduler: veille mensuelle automatique")
+                try:
+                    from modules.veille import generer_veille_mensuelle
+                    await generer_veille_mensuelle()
+                    logger.info("✅ Veille mensuelle envoyée")
+                except Exception as e:
+                    logger.error(f"Veille mensuelle auto: {e}")
+
         except asyncio.CancelledError:
             break
         except Exception as e:
