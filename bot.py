@@ -2978,7 +2978,16 @@ async def _run_all(application):
 
 
     import asyncio as _asyncio
-    _asyncio.run(_run_all(app))
+    import sys as _sys
+    import traceback as _tb
+    try:
+        _asyncio.run(_run_all(app))
+    except Exception as _e:
+        _tb.print_exc()
+        _sys.stderr.flush()
+        _sys.stdout.flush()
+        print(f"FATAL: {type(_e).__name__}: {_e}", flush=True)
+        _sys.exit(1)
 
 if __name__ == "__main__":
     main()
