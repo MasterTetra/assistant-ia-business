@@ -600,7 +600,7 @@ async def traiter_articles_vendus() -> dict:
     - Articles avec Quantite totale = 0
     Archive dans Sheets VENTES + PRODUITS ARCHIVÉS + supprime Airtable.
     """
-    resultats = {"traites": 0, "archives_ventes": 0, "archives_produits": 0, "supprimes": 0, "erreurs": 0}
+    resultats = {"traites": 0, "archives_ventes": 0, "supprimes": 0, "erreurs": 0}
     now = datetime.now(PARIS_TZ)
     date_str = now.strftime("%d/%m/%Y")
 
@@ -685,135 +685,13 @@ async def traiter_articles_vendus() -> dict:
             else:
                 resultats["erreurs"] += 1
 
-        # 2. Archiver dans PRODUITS ARCHIVÉS
-        payload_produit = {
-            "event": "produit_archiver",
-            "data": {
-                "reference": ref,
-                "description": description,
-                "prix_achat_total": f.get("Prix achat total") or 0,
-                "prix_achat_unitaire": pa,
-                "qte_totale": f.get("Quantite totale") or 0,
-                "qte_vendue": qte_vendue,
-                "prix_vente": pv,
-                "date_achat": f.get("Date achat") or "",
-                "date_vente": date_vente,
-                "plateforme": plateforme,
-                "frais_plateforme": frais_pf,
-                "frais_transport": frais_tr,
-                "source": f.get("Source") or "",
-                "statut": "vendu",
-                "notes": f.get("Notes") or "",
-                "annonce_generee": (f.get("Annonce générée") or "")[:200],
-            }
-        }
-        ok_prod = await _envoyer_make(payload_produit)
-        if ok_prod:
-            resultats["archives_produits"] += 1
-
-        # 3. Supprimer de Airtable seulement si archivage réussi
-        if ok_prod:
-            ok_del = await _supprimer_lot(record_id)
-            if ok_del:
-                resultats["supprimes"] += 1
-                logger.info(f"✅ {ref} archivé + supprimé Airtable")
-            else:
-                logger.error(f"❌ {ref} archivé mais suppression Airtable échouée")
+        # 2. Supprimer de Airtable (ventes archivées dans VENTES)
+        ok_del = await _supprimer_lot(record_id)
+        if ok_del:
+            resultats["supprimes"] += 1
+            logger.info(f"✅ {ref} archivé dans VENTES + supprimé Airtable")
         else:
-            logger.error(f"❌ {ref} archivage produit échoué — suppression annulée")
+            logger.error(f"❌ {ref} archivé dans VENTES mais suppression Airtable échouée")
 
     return resultats
 
-
-async def archiver_catalogue_complet() -> dict:
-    """
-    Archive TOUS les articles Airtable dans l'onglet PRODUITS ARCHIVÉS.
-    Utilisé à chaque /archive sync pour maintenir une base de données complète.
-    Les articles vendus/supprimés d'Airtable restent dans l'onglet.
-    Logic : UPSERT par référence (mise à jour si existe, ajout sinon).
-    """
-    resultats = {"total": 0, "archives": 0, "erreurs": 0}
-
-    try:
-        async with httpx.AsyncClient(timeout=30) as http:
-            resp = await http.get(
-                f"{AIRTABLE_URL}/{TABLE}",
-                headers=HEADERS_AT,
-                params={
-                    "fields[]": [
-                        "Référence gestion", "Description", "Statut",
-                        "Quantite totale", "Quantite vendue",
-                        "Prix achat unitaire", "Prix achat total",
-                        "Prix vente", "Date achat", "Date vente",
-                        "Source", "Plateforme vente", "Frais plateforme",
-                        "Frais transport", "Notes", "Annonce générée"
-                    ],
-                    "maxRecords": 200,
-                    "sort[0][field]": "Référence gestion",
-                    "sort[0][direction]": "asc"
-                }
-            )
-        records = resp.json().get("records", [])
-        resultats["total"] = len(records)
-        logger.info(f"archiver_catalogue_complet: {len(records)} articles à archiver")
-    except Exception as e:
-        logger.error(f"archiver_catalogue_complet fetch: {e}")
-        return {"erreur": str(e)}
-
-    now = datetime.now(PARIS_TZ)
-    date_str = now.strftime("%d/%m/%Y")
-
-    for r in records:
-        f = r["fields"]
-        ref = f.get("Référence gestion", "")
-        if not ref:
-            continue
-
-        # Formater date achat
-        date_achat = f.get("Date achat", "") or ""
-        if date_achat and "-" in date_achat:
-            try:
-                from datetime import datetime as dt
-                date_achat = dt.strptime(date_achat[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
-            except Exception:
-                pass
-
-        # Formater date vente
-        date_vente = f.get("Date vente", "") or ""
-        if date_vente and "-" in date_vente:
-            try:
-                from datetime import datetime as dt
-                date_vente = dt.strptime(date_vente[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
-            except Exception:
-                date_vente = ""
-
-        payload = {
-            "event": "produit_archiver",
-            "data": {
-                "reference":           ref,
-                "description":         f.get("Description", ""),
-                "prix_achat_total":    f.get("Prix achat total") or 0,
-                "prix_achat_unitaire": float(f.get("Prix achat unitaire") or 0),
-                "qte_totale":          int(f.get("Quantite totale") or 0),
-                "qte_vendue":          int(f.get("Quantite vendue") or 0),
-                "prix_vente":          float(f.get("Prix vente") or 0),
-                "date_achat":          date_achat,
-                "date_vente":          date_vente,
-                "plateforme":          f.get("Plateforme vente") or "",
-                "frais_plateforme":    float(f.get("Frais plateforme") or 0),
-                "frais_transport":     float(f.get("Frais transport") or 0),
-                "source":              f.get("Source") or "",
-                "statut":              f.get("Statut") or "",
-                "notes":               f.get("Notes") or "",
-                "annonce_generee":     (f.get("Annonce générée") or "")[:200],
-            }
-        }
-
-        ok = await _envoyer_make(payload)
-        if ok:
-            resultats["archives"] += 1
-        else:
-            resultats["erreurs"] += 1
-
-    logger.info(f"✅ Catalogue archivé: {resultats['archives']}/{resultats['total']}")
-    return resultats
