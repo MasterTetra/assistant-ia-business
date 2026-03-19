@@ -51,6 +51,8 @@ STATUTS_ALIAS = {
     "rénovation":       "en rénovation",
     "en rénovation":    "en rénovation",
     "en renovation":    "en rénovation",
+    "retour":           "retour en cours",
+    "retour en cours":  "retour en cours",
 }
 
 # ─────────────────────────────────────────────
@@ -230,7 +232,7 @@ async def get_stock_summary() -> str:
             if count > 0:
                 emoji = {"acheté": "🛒", "en stockage": "📦", "en ligne": "🌐",
                          "vendu": "✅", "en cours d'expédition": "🚚", "livré": "🏠",
-                         "en transport": "🚛", "en rénovation": "🔧"}.get(statut, "•")
+                         "en transport": "🚛", "en rénovation": "🔧", "retour en cours": "↩️"}.get(statut, "•")
                 lines.append(f"  {emoji} {statut.capitalize()} : {count}")
 
         if total_vente_potentielle > 0:
@@ -412,7 +414,7 @@ async def update_status(ref: str, new_status_raw: str, plateforme: str = "") -> 
 
         emoji_map = {
             "acheté": "🛒", "en ligne": "🟢", "en cours d'expédition": "📬",
-            "livré": "📦", "vendu": "✅", "en stockage": "🏭", "en rénovation": "🔧"
+            "livré": "📦", "vendu": "✅", "en stockage": "🏭", "en rénovation": "🔧", "retour en cours": "↩️"
         }
         emoji = emoji_map.get(new_status, "🔄")
 
