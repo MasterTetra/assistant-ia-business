@@ -81,7 +81,12 @@ async def lire_snapshot() -> dict:
         url = f"https://sheets.googleapis.com/v4/spreadsheets/{sheet_id}/values/SNAPSHOT!A2:F1000"
         async with httpx.AsyncClient(timeout=20) as http:
             resp = await http.get(url, headers={"Authorization": f"Bearer {token}"})
-        rows = resp.json().get("values", [])
+        logger.info(f"Sheets lire_snapshot status: {resp.status_code}")
+        if resp.status_code != 200:
+            logger.error(f"Sheets API erreur: {resp.text[:200]}")
+            return {}
+        data = resp.json()
+        rows = data.get("values", [])
         snapshot = {}
         for row in rows:
             if len(row) < 3:
@@ -109,9 +114,11 @@ async def ecrire_snapshot(records: list) -> bool:
     """
     sheet_id = os.getenv("GOOGLE_SHEET_ID", "")
     if not sheet_id:
+        logger.warning("ecrire_snapshot: GOOGLE_SHEET_ID manquant")
         return False
     try:
         token = await _get_access_token()
+        logger.info(f"ecrire_snapshot: token obtenu OK, sheet_id={sheet_id[:20]}...")
         now = datetime.now(PARIS_TZ).strftime("%d/%m/%Y %H:%M")
 
         # Header + données
@@ -132,11 +139,15 @@ async def ecrire_snapshot(records: list) -> bool:
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
         async with httpx.AsyncClient(timeout=20) as http:
-            await http.post(url_clear, headers=headers)
+            r_clear = await http.post(url_clear, headers=headers)
+            logger.info(f"Sheets clear: {r_clear.status_code}")
             resp = await http.put(url_write, headers=headers, json={"values": values})
+            logger.info(f"Sheets write: {resp.status_code}")
+            if resp.status_code != 200:
+                logger.error(f"Sheets write erreur: {resp.text[:300]}")
 
         ok = resp.status_code == 200
-        logger.info(f"✅ Snapshot écrit: {len(records)} records — {resp.status_code}")
+        logger.info(f"{'✅' if ok else '❌'} Snapshot écrit: {len(records)} records — {resp.status_code}")
         return ok
     except Exception as e:
         logger.error(f"ecrire_snapshot: {e}")
