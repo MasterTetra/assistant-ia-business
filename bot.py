@@ -2635,19 +2635,40 @@ async def cmd_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await thinking.edit_text(f"⚠️ Erreur : {e}")
 
     elif mode == "sync":
-        thinking = await update.message.reply_text("🔄 Sync intelligent en cours...")
+        thinking = await update.message.reply_text("🔄 Traitement articles vendus + sync en cours...")
         try:
-            from modules.archive import sync_intelligent
-            result = await sync_intelligent()
-            await thinking.edit_text(
+            from modules.archive import traiter_articles_vendus, sync_intelligent
+
+            # 1. Traiter immédiatement les articles vendus/soldés
+            result_ventes = await traiter_articles_vendus()
+            traites = result_ventes.get("traites", 0)
+            archives_v = result_ventes.get("archives_ventes", 0)
+            archives_p = result_ventes.get("archives_produits", 0)
+            supprimes = result_ventes.get("supprimes", 0)
+
+            # 2. Sync intelligent (détection hors ligne + snapshot)
+            result_sync = await sync_intelligent()
+
+            msg = (
                 f"✅ *Sync terminé*\n"
-                f"  • {result.get('ventes_detectees', 0)} vente(s) hors ligne détectée(s)\n"
-                f"  • {result.get('archives', 0)} ligne(s) archivée(s) dans Sheets\n"
-                f"  • {result.get('corrections_desc', 0)} description(s) corrigée(s)\n"
-                f"  • {result.get('erreurs', 0)} erreur(s)\n"
-                f"_Snapshot mis à jour_",
-                parse_mode="Markdown"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
             )
+            if traites > 0:
+                msg += (
+                    f"📦 *Articles vendus traités : {traites}*\n"
+                    f"  • Ventes archivées : {archives_v}\n"
+                    f"  • Produits archivés : {archives_p}\n"
+                    f"  • Supprimés Airtable : {supprimes}\n"
+                )
+            else:
+                msg += "✅ Aucun article vendu/soldé en attente\n"
+
+            corrections = result_sync.get("corrections_desc", 0)
+            if corrections > 0:
+                msg += f"✏️ {corrections} description(s) corrigée(s)\n"
+            msg += f"📊 _Snapshot mis à jour_"
+
+            await thinking.edit_text(msg, parse_mode="Markdown")
         except Exception as e:
             logger.error(f"archive sync manuel: {e}", exc_info=True)
             await thinking.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
@@ -3215,9 +3236,14 @@ async def _scheduler_exports(app):
             # ── Sync intelligent quotidien 23h59 ──────────────────────────────
             is_2359 = (now.hour == 23 and now.minute == 59)
             if is_2359:
-                logger.info("📦 Scheduler: sync intelligent automatique")
+                logger.info("📦 Scheduler: traitement articles vendus + sync")
                 try:
-                    from modules.archive import sync_intelligent
+                    from modules.archive import traiter_articles_vendus, sync_intelligent
+                    # Traiter d'abord les articles vendus/soldés
+                    r_ventes = await traiter_articles_vendus()
+                    if r_ventes.get("traites", 0) > 0:
+                        logger.info(f"✅ Articles vendus: {r_ventes.get('traites')} traités, {r_ventes.get('supprimes')} supprimés Airtable")
+                    # Puis sync intelligent
                     result = await sync_intelligent()
                     ventes = result.get("ventes_detectees", 0)
                     archives = result.get("archives", 0)
