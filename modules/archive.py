@@ -49,28 +49,96 @@ async def _get_lot_by_ref(ref: str) -> dict | None:
         return None
 
 
-async def _get_lot_by_description(description: str) -> dict | None:
-    """Récupère un lot actif par description (pour les ventes Make.com sans ref)."""
+async def _get_lot_by_description(titre_mail: str) -> dict | None:
+    """
+    Cherche un lot actif par titre.
+    Stratégie en cascade :
+    1. Cherche dans Description (correspondance exacte partielle)
+    2. Cherche dans Annonce générée (titre du mail = début de l'annonce)
+    3. Cherche par mots-clés (premiers mots du titre)
+    """
+    # Nettoyer le titre : enlever les préfixes eBay courants
+    titre = titre_mail.strip()
+    for prefix in ["Re: ", "Fwd: ", "eBay - ", "eBay: "]:
+        if titre.startswith(prefix):
+            titre = titre[len(prefix):]
+
+    # Extraire les 40 premiers caractères significatifs
+    titre_court = titre[:40].strip()
+    # Premiers mots clés (3 premiers mots)
+    mots = [m for m in titre.split()[:4] if len(m) > 2]
+
     try:
         async with httpx.AsyncClient(timeout=20) as http:
+
+            # Tentative 1 : Description
+            formule = (
+                f'AND('
+                f'FIND(LOWER("{titre_court.lower()}"), LOWER({{Description}}))>0,'
+                f'OR({{Statut}}="en ligne",{{Statut}}="acheté")'
+                f')'
+            )
             resp = await http.get(
                 f"{AIRTABLE_URL}/{TABLE}",
                 headers=HEADERS_AT,
-                params={
-                    "filterByFormula": (
-                        f"AND(FIND(LOWER(\"{description[:30].lower()}\"), LOWER({{Description}}))>0,"
-                        f"{{Statut}}=\"en ligne\")"
-                    ),
-                    "maxRecords": 1,
-                    "sort[0][field]": "Référence gestion",
-                    "sort[0][direction]": "asc"
-                }
+                params={"filterByFormula": formule, "maxRecords": 1,
+                        "sort[0][field]": "Référence gestion",
+                        "sort[0][direction]": "asc"}
             )
-        records = resp.json().get("records", [])
-        if not records:
-            return None
-        r = records[0]
-        return {"record_id": r["id"], **r["fields"]}
+            records = resp.json().get("records", [])
+            if records:
+                r = records[0]
+                logger.info(f"✅ Lot trouvé par Description: {r['fields'].get('Référence gestion')}")
+                return {"record_id": r["id"], **r["fields"]}
+
+            # Tentative 2 : Annonce générée
+            formule2 = (
+                f'AND('
+                f'FIND(LOWER("{titre_court.lower()}"), LOWER({{Annonce générée}}))>0,'
+                f'OR({{Statut}}="en ligne",{{Statut}}="acheté")'
+                f')'
+            )
+            resp2 = await http.get(
+                f"{AIRTABLE_URL}/{TABLE}",
+                headers=HEADERS_AT,
+                params={"filterByFormula": formule2, "maxRecords": 1,
+                        "sort[0][field]": "Référence gestion",
+                        "sort[0][direction]": "asc"}
+            )
+            records2 = resp2.json().get("records", [])
+            if records2:
+                r = records2[0]
+                logger.info(f"✅ Lot trouvé par Annonce générée: {r['fields'].get('Référence gestion')}")
+                return {"record_id": r["id"], **r["fields"]}
+
+            # Tentative 3 : mots-clés
+            if mots:
+                conditions = " ".join([
+                    f'FIND(LOWER("{m.lower()}"), LOWER({{Description}}))>0'
+                    for m in mots[:3]
+                ])
+                formule3 = (
+                    f'AND('
+                    f'OR({{Statut}}="en ligne",{{Statut}}="acheté"),'
+                    f'AND({conditions})'
+                    f')'
+                )
+                resp3 = await http.get(
+                    f"{AIRTABLE_URL}/{TABLE}",
+                    headers=HEADERS_AT,
+                    params={"filterByFormula": formule3, "maxRecords": 1,
+                            "sort[0][field]": "Référence gestion",
+                            "sort[0][direction]": "asc"}
+                )
+                records3 = resp3.json().get("records", [])
+                if records3:
+                    r = records3[0]
+                    logger.info(f"✅ Lot trouvé par mots-clés: {r['fields'].get('Référence gestion')}")
+                    return {"record_id": r["id"], **r["fields"]}
+
+        logger.warning(f"❌ Aucun lot trouvé pour: {titre_court}")
+        return None
+
     except Exception as e:
         logger.error(f"_get_lot_by_description: {e}")
         return None
@@ -335,3 +403,175 @@ async def sync_ventes_vers_sheets() -> dict:
         "archives": ok_count,
         "echecs": len(records) - ok_count
     }
+
+
+# ── SYNC INTELLIGENT QUOTIDIEN ────────────────────────────────────────────────
+
+async def sync_intelligent() -> dict:
+    """
+    Sync quotidien 23h59 :
+    1. Lit snapshot précédent depuis Google Sheets
+    2. Lit Airtable actuel
+    3. Détecte changements de quantité (ventes hors ligne)
+    4. Archive les ventes manquantes dans Sheets VENTES
+    5. Si qté = 0 → archive PRODUITS ARCHIVÉS + supprime Airtable
+    6. Met à jour le SNAPSHOT
+    7. Corrige Description = titre de l'Annonce générée si différent
+
+    Retourne un résumé des opérations.
+    """
+    from modules.gsheets_direct import lire_snapshot, ecrire_snapshot
+
+    now = datetime.now(PARIS_TZ)
+    date_str = now.strftime("%d/%m/%Y")
+    resultats = {"ventes_detectees": 0, "archives": 0, "corrections_desc": 0, "erreurs": 0}
+
+    # 1. Lire snapshot précédent
+    snapshot = await lire_snapshot()
+
+    # 2. Lire Airtable actuel
+    try:
+        async with httpx.AsyncClient(timeout=30) as http:
+            resp = await http.get(
+                f"{AIRTABLE_URL}/{TABLE}",
+                headers=HEADERS_AT,
+                params={
+                    "fields[]": [
+                        "Référence gestion", "Description", "Statut",
+                        "Quantite totale", "Quantite vendue", "Prix achat unitaire",
+                        "Prix achat total", "Prix vente", "Date achat", "Date vente",
+                        "Source", "Plateforme vente", "Frais plateforme",
+                        "Frais transport", "Notes", "Annonce générée"
+                    ],
+                    "maxRecords": 200,
+                    "sort[0][field]": "Référence gestion",
+                    "sort[0][direction]": "asc"
+                }
+            )
+        at_records = resp.json().get("records", [])
+    except Exception as e:
+        logger.error(f"sync_intelligent fetch Airtable: {e}")
+        return {"erreur": str(e)}
+
+    # 3. Comparer et détecter changements
+    for r in at_records:
+        f = r["fields"]
+        ref = f.get("Référence gestion", "")
+        record_id = r["id"]
+        if not ref:
+            continue
+
+        qte_actuelle = int(f.get("Quantite totale") or 0)
+        qte_vendue_at = int(f.get("Quantite vendue") or 0)
+        statut = f.get("Statut", "")
+        description = f.get("Description", "")
+        annonce = f.get("Annonce générée", "") or ""
+        pv = float(f.get("Prix vente") or 0)
+        pa = float(f.get("Prix achat unitaire") or 0)
+        plateforme = f.get("Plateforme vente", "") or "Hors ligne"
+        frais_pf = float(f.get("Frais plateforme") or 0)
+        frais_tr = float(f.get("Frais transport") or 0)
+
+        # 3a. Correction Description si différent du titre Annonce générée
+        if annonce:
+            # Extraire le titre de l'annonce (première ligne non vide)
+            titre_annonce = ""
+            for ligne in annonce.split("\n"):
+                ligne = ligne.strip()
+                # Ignorer les préfixes courants
+                for prefix in ["TITRE:", "Titre:", "Title:", "**", "##"]:
+                    if ligne.startswith(prefix):
+                        ligne = ligne[len(prefix):].strip()
+                if ligne and len(ligne) > 5:
+                    titre_annonce = ligne[:100]
+                    break
+
+            if titre_annonce and titre_annonce != description and len(titre_annonce) > 5:
+                try:
+                    async with httpx.AsyncClient(timeout=15) as http:
+                        await http.patch(
+                            f"{AIRTABLE_URL}/{TABLE}/{record_id}",
+                            headers=HEADERS_AT,
+                            json={"fields": {"Description": titre_annonce}}
+                        )
+                    logger.info(f"✅ Description corrigée: {ref} → {titre_annonce[:40]}")
+                    resultats["corrections_desc"] += 1
+                    description = titre_annonce
+                except Exception as e:
+                    logger.error(f"Correction description {ref}: {e}")
+
+        # 3b. Détecter ventes hors ligne via snapshot
+        if ref in snapshot:
+            qte_snapshot = snapshot[ref]["qte"]
+            diff = qte_snapshot - qte_actuelle
+
+            if diff > 0:
+                # Vente détectée !
+                logger.info(f"📦 Vente hors ligne détectée: {ref} — {diff} unité(s) vendue(s)")
+                resultats["ventes_detectees"] += diff
+
+                # Archiver chaque unité vendue
+                for i in range(diff):
+                    marge_brute = round((pv - pa), 2) if pv and pa else 0
+                    resultat_net = round(marge_brute - frais_pf - frais_tr, 2)
+
+                    payload_vente = {
+                        "event": "vente_archiver",
+                        "data": {
+                            "date_vente": date_str,
+                            "reference": ref,
+                            "description": description[:60],
+                            "qte_vendue": 1,
+                            "prix_achat_unitaire": pa,
+                            "prix_vente": pv,
+                            "marge_brute": marge_brute,
+                            "frais_plateforme": frais_pf,
+                            "frais_transport": frais_tr,
+                            "resultat_net": resultat_net,
+                            "plateforme": plateforme or "Hors ligne",
+                            "statut": "vendu"
+                        }
+                    }
+                    ok = await _envoyer_make(payload_vente)
+                    if ok:
+                        resultats["archives"] += 1
+                    else:
+                        resultats["erreurs"] += 1
+
+        # 3c. Si qté = 0 et pas encore archivé dans PRODUITS ARCHIVÉS
+        if qte_actuelle == 0 and statut != "vendu":
+            logger.info(f"🏁 Lot soldé détecté: {ref}")
+            await _patch_lot(record_id, {"Statut": "vendu"})
+
+            payload_produit = {
+                "event": "produit_archiver",
+                "data": {
+                    "reference": ref,
+                    "description": description,
+                    "prix_achat_total": f.get("Prix achat total", 0),
+                    "prix_achat_unitaire": pa,
+                    "qte_totale": f.get("Quantite totale", 0),
+                    "qte_vendue": qte_vendue_at,
+                    "prix_vente": pv,
+                    "date_achat": f.get("Date achat", ""),
+                    "date_vente": date_str,
+                    "plateforme": plateforme,
+                    "frais_plateforme": frais_pf,
+                    "frais_transport": frais_tr,
+                    "source": f.get("Source", ""),
+                    "statut": "vendu",
+                    "notes": f.get("Notes", ""),
+                    "annonce_generee": annonce[:200],
+                }
+            }
+            archive_ok = await _envoyer_make(payload_produit)
+            if archive_ok:
+                await _supprimer_lot(record_id)
+                logger.info(f"✅ {ref} archivé + supprimé Airtable")
+
+    # 4. Mettre à jour le snapshot avec l'état actuel
+    records_actifs = [r["fields"] for r in at_records if r["fields"].get("Statut") not in ("vendu",)]
+    await ecrire_snapshot(records_actifs)
+    logger.info(f"✅ Snapshot mis à jour: {len(records_actifs)} records actifs")
+
+    return resultats
