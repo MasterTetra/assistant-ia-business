@@ -233,9 +233,7 @@ async def traiter_vente(
     qte_actuelle   = int(lot.get("Quantite totale") or 0)
     qte_deja_vendue = int(lot.get("Quantite vendue") or 0)
 
-    # Frais plateforme par défaut 13% si non fourni
-    if frais_plateforme == 0:
-        frais_plateforme = round(prix_vente * qte_vendue * 0.13, 2)
+    # Frais plateforme : 0 par défaut (mis à jour manuellement après réception virement)
 
     marge_brute  = round((prix_vente - pa_unitaire) * qte_vendue, 2)
     resultat_net = _calculer_resultat_net(
