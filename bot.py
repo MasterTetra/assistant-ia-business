@@ -2639,7 +2639,7 @@ async def cmd_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             from modules.archive import traiter_articles_vendus, sync_intelligent
 
-            from modules.archive import traiter_articles_vendus, sync_intelligent, archiver_catalogue_complet
+            from modules.archive import traiter_articles_vendus, sync_intelligent
 
             # 1. Traiter les articles vendus/soldés
             result_ventes = await traiter_articles_vendus()
@@ -2647,22 +2647,18 @@ async def cmd_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
             archives_v = result_ventes.get("archives_ventes", 0)
             supprimes = result_ventes.get("supprimes", 0)
 
-            # 2. Archiver catalogue complet → PRODUITS ARCHIVÉS
-            result_cat = await archiver_catalogue_complet()
-
-            # 3. Sync intelligent (snapshot + corrections)
+            # 2. Sync intelligent (snapshot + corrections)
             result_sync = await sync_intelligent()
 
             msg = "✅ *Sync terminé*\n━━━━━━━━━━━━━━━━━━━━\n"
             if traites > 0:
                 msg += (
                     f"📦 *{traites} article(s) vendus traités*\n"
-                    f"  • {archives_v} vente(s) archivée(s) dans Sheets\n"
+                    f"  • {archives_v} vente(s) archivée(s) dans Sheets VENTES\n"
                     f"  • {supprimes} supprimé(s) d'Airtable\n"
                 )
             else:
                 msg += "✅ Aucun article vendu en attente\n"
-            msg += f"🗄️ Catalogue archivé : {result_cat.get('archives', 0)}/{result_cat.get('total', 0)} articles\n"
             corrections = result_sync.get("corrections_desc", 0)
             if corrections > 0:
                 msg += f"✏️ {corrections} description(s) corrigée(s)\n"
@@ -3238,11 +3234,10 @@ async def _scheduler_exports(app):
             if is_2359:
                 logger.info("📦 Scheduler: traitement articles vendus + sync")
                 try:
-                    from modules.archive import traiter_articles_vendus, sync_intelligent, archiver_catalogue_complet
+                    from modules.archive import traiter_articles_vendus, sync_intelligent
                     r_ventes = await traiter_articles_vendus()
                     if r_ventes.get("traites", 0) > 0:
                         logger.info(f"✅ Articles vendus: {r_ventes.get('traites')} traités, {r_ventes.get('supprimes')} supprimés")
-                    await archiver_catalogue_complet()
                     result = await sync_intelligent()
                     ventes = result.get("ventes_detectees", 0)
                     archives = result.get("archives", 0)
