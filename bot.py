@@ -3001,7 +3001,7 @@ async def cmd_statut(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Gérer statuts multi-mots : "en cours" "en ligne" etc.
         if len(context.args) >= 3:
             # Distinguer statut multi-mots vs plateforme
-            statuts_multi = ["en ligne", "en cours", "en stockage", "en rénovation"]
+            statuts_multi = ["en ligne", "en cours", "en stockage", "en rénovation", "retour en cours"]
             two_words = f"{context.args[1].lower()} {context.args[2].lower()}"
             if two_words in statuts_multi or two_words.startswith("en "):
                 new_status = two_words
