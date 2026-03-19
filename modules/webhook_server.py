@@ -637,8 +637,9 @@ async def traiter_vente_confirmee(payload: dict) -> str:
     frais_pf  = float(payload.get("frais_plateforme") or 0)
     frais_tr  = float(payload.get("frais_transport") or 0)
 
-    if prix <= 0:
-        logger.warning(f"vente_confirmee: prix invalide ({prix})")
+    # Prix peut être 0 si non parsé — on utilisera le prix Airtable
+    if prix < 0:
+        logger.warning(f"vente_confirmee: prix négatif ({prix})")
         return "invalid_price"
 
     if not ref and not titre:
@@ -685,7 +686,7 @@ async def traiter_vente_confirmee(payload: dict) -> str:
             logger.error(f"traiter_vente échoué: {result.get('erreur')}")
             return "error"
 
-        # Notification Telegram dans Sales
+        # Notification dans Sales Notifications (supergroupe uniquement)
         lot_solde = result.get("lot_solde", False)
         desc = result.get("description", "?")[:40]
         restant = result.get("qte_restante", 0)
@@ -707,6 +708,7 @@ async def traiter_vente_confirmee(payload: dict) -> str:
             msg += f"📊 Restant : {restant} unité(s)\n"
         msg += f"━━━━━━━━━━━━━━━━━━━━"
 
+        # Envoyer UNIQUEMENT dans Sales Notifications (pas en privé)
         await _notif_telegram(msg, topic="sales")
         return "ok"
 
@@ -740,3 +742,136 @@ async def _notif_telegram(msg: str, topic: str = "sales"):
         logger.info(f"✅ Notif Telegram envoyée — topic={topic_key} thread={thread_id}")
     except Exception as e:
         logger.error(f"_notif_telegram: {e}")
+
+
+async def traiter_expedition_confirmee(payload: dict) -> str:
+    """
+    Expédition confirmée : passe le statut à "en cours d'expédition" si article unique.
+    Pour les lots partiels, ne touche pas au statut.
+    """
+    secret = payload.get("secret", "")
+    if secret != WEBHOOK_SECRET:
+        return "unauthorized"
+
+    source = payload.get("source", "inconnu").lower()
+    ref    = payload.get("ref", "").strip()
+    titre  = payload.get("titre", "").strip()
+    source_label = {"lbc": "LeBonCoin", "leboncoin": "LeBonCoin",
+                    "vinted": "Vinted", "ebay": "eBay"}.get(source, source.upper())
+    logger.info(f"📬 Expedition confirmee [{source_label}]: {ref or titre[:30]}")
+
+    try:
+        from modules.archive import _get_lot_by_ref, _get_lot_by_description, _patch_lot
+        lot = None
+        if ref:
+            lot = await _get_lot_by_ref(ref)
+        if not lot and titre:
+            lot = await _get_lot_by_description(titre)
+
+        if not lot:
+            await _notif_telegram(
+                "Expedition detectee - lot introuvable\n"
+                f"Plateforme : {source_label}\n"
+                f"Article : {titre[:50] if titre else ref}\n"
+                "Mets a jour manuellement : /statut REF expedition",
+                topic="sales"
+            )
+            return "lot_not_found"
+
+        record_id   = lot["record_id"]
+        qte_totale  = int(lot.get("Quantite totale") or 1)
+        statut_act  = lot.get("Statut", "")
+        description = lot.get("Description", "?")[:40]
+        ref_gestion = lot.get("Reference gestion", ref)
+
+        # Article unique → statut automatique
+        # Lot partiel → ne pas toucher au statut
+        if qte_totale <= 1:
+            await _patch_lot(record_id, {"Statut": "en cours d'expédition"})
+            statut_msg = "Statut : en cours d'expedition"
+        else:
+            statut_msg = f"Lot de {qte_totale} - statut inchange ({statut_act})"
+
+        await _notif_telegram(
+            f"EXPEDITION {source_label}\n"
+            f"{description}\n"
+            f"{ref_gestion}\n"
+            f"{statut_msg}\n"
+            f"Marque 'livre' quand l'acheteur recoit le colis",
+            topic="sales"
+        )
+        return "ok"
+    except Exception as e:
+        logger.error(f"traiter_expedition_confirmee: {e}", exc_info=True)
+        return "error"
+
+
+async def traiter_vente_finalisee(payload: dict) -> str:
+    """
+    Vente finalisee (fonds disponibles) : archive dans VENTES, supprime Airtable si solde.
+    """
+    secret = payload.get("secret", "")
+    if secret != WEBHOOK_SECRET:
+        return "unauthorized"
+
+    source   = payload.get("source", "inconnu").lower()
+    ref      = payload.get("ref", "").strip()
+    titre    = payload.get("titre", "").strip()
+    prix_raw = str(payload.get("prix_vente") or "0").replace(",", ".").replace(" ", "")
+    prix     = float(prix_raw) if prix_raw else 0.0
+    source_label = {"lbc": "LeBonCoin", "leboncoin": "LeBonCoin",
+                    "vinted": "Vinted", "ebay": "eBay"}.get(source, source.upper())
+    logger.info(f"Vente finalisee [{source_label}]: {ref or titre[:30]} - {prix}EUR")
+
+    try:
+        from modules.archive import _get_lot_by_ref, _get_lot_by_description, traiter_vente
+        lot = None
+        if ref:
+            lot = await _get_lot_by_ref(ref)
+        if not lot and titre:
+            lot = await _get_lot_by_description(titre)
+
+        if not lot:
+            await _notif_telegram(
+                f"Vente finalisee - lot introuvable\n"
+                f"Plateforme : {source_label}\n"
+                f"Article : {titre[:50] if titre else ref}\n"
+                f"Prix : {prix}EUR\n"
+                "Traite manuellement : /archive vente REF 1 PRIX",
+                topic="sales"
+            )
+            return "lot_not_found"
+
+        ref_gestion = lot.get("Référence gestion", ref)
+        result = await traiter_vente(
+            ref=ref_gestion,
+            qte_vendue=1,
+            prix_vente=prix if prix > 0 else float(lot.get("Prix vente") or 0),
+            plateforme=source_label,
+        )
+
+        if not result.get("ok"):
+            return "error"
+
+        lot_solde = result.get("lot_solde", False)
+        desc      = result.get("description", "?")[:40]
+        net       = result.get("resultat_net", 0)
+        restant   = result.get("qte_restante", 0)
+
+        emoji = "SOLDE" if lot_solde else "OK"
+        msg = (
+            f"VENTE FINALISEE {source_label} [{emoji}]\n"
+            f"{desc}\n"
+            f"{ref_gestion}\n"
+            f"Prix : {prix}EUR | Net : {net}EUR\n"
+        )
+        if lot_solde:
+            msg += "Lot solde - archive + supprime Airtable"
+        else:
+            msg += f"Restant : {restant} unite(s)"
+
+        await _notif_telegram(msg, topic="sales")
+        return "ok"
+    except Exception as e:
+        logger.error(f"traiter_vente_finalisee: {e}", exc_info=True)
+        return "error"
