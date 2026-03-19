@@ -677,9 +677,15 @@ async def traiter_vente_confirmee(payload: dict) -> str:
 
 async def _notif_telegram(msg: str, topic: str = "sales"):
     """Envoie une notification Telegram dans le bon topic."""
-    import os as _os
     from config.settings import SUPERGROUP_ID, TOPICS, TELEGRAM_TOKEN as TG_TOKEN
-    thread_id = TOPICS.get(f"sales_notifications" if topic == "sales" else topic)
+    # Mapping topic → clé TOPICS
+    topic_map = {
+        "sales": "sales_notifications",
+        "audit": "audit",
+        "accounting": "accounting_report",
+    }
+    topic_key = topic_map.get(topic, topic)
+    thread_id = TOPICS.get(topic_key)
     try:
         async with __import__("httpx").AsyncClient(timeout=15) as http:
             await http.post(
@@ -691,5 +697,6 @@ async def _notif_telegram(msg: str, topic: str = "sales"):
                     "parse_mode": "Markdown"
                 }
             )
+        logger.info(f"✅ Notif Telegram envoyée — topic={topic_key} thread={thread_id}")
     except Exception as e:
         logger.error(f"_notif_telegram: {e}")
