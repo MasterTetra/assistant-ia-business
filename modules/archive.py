@@ -644,13 +644,15 @@ async def traiter_articles_vendus() -> dict:
         frais_tr = float(f.get("Frais transport") or 0)
         date_vente = f.get("Date vente", "") or date_str
 
-        # Formater la date
-        if date_vente and len(date_vente) == 10 and "-" in date_vente:
+        # Formater la date — utiliser la date Airtable si disponible, sinon aujourd'hui
+        if date_vente and len(date_vente) >= 10 and "-" in date_vente:
             try:
                 from datetime import datetime as dt
-                date_vente = dt.strptime(date_vente, "%Y-%m-%d").strftime("%d/%m/%Y")
+                date_vente = dt.strptime(date_vente[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
             except Exception:
-                pass
+                date_vente = date_str
+        elif not date_vente:
+            date_vente = date_str
 
         marge_brute = round((pv - pa) * max(qte_vendue, 1), 2) if pv and pa else 0
         resultat_net = round(marge_brute - frais_pf - frais_tr, 2)
@@ -720,4 +722,98 @@ async def traiter_articles_vendus() -> dict:
         else:
             logger.error(f"❌ {ref} archivage produit échoué — suppression annulée")
 
+    return resultats
+
+
+async def archiver_catalogue_complet() -> dict:
+    """
+    Archive TOUS les articles Airtable dans l'onglet PRODUITS ARCHIVÉS.
+    Utilisé à chaque /archive sync pour maintenir une base de données complète.
+    Les articles vendus/supprimés d'Airtable restent dans l'onglet.
+    Logic : UPSERT par référence (mise à jour si existe, ajout sinon).
+    """
+    resultats = {"total": 0, "archives": 0, "erreurs": 0}
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as http:
+            resp = await http.get(
+                f"{AIRTABLE_URL}/{TABLE}",
+                headers=HEADERS_AT,
+                params={
+                    "fields[]": [
+                        "Référence gestion", "Description", "Statut",
+                        "Quantite totale", "Quantite vendue",
+                        "Prix achat unitaire", "Prix achat total",
+                        "Prix vente", "Date achat", "Date vente",
+                        "Source", "Plateforme vente", "Frais plateforme",
+                        "Frais transport", "Notes", "Annonce générée"
+                    ],
+                    "maxRecords": 200,
+                    "sort[0][field]": "Référence gestion",
+                    "sort[0][direction]": "asc"
+                }
+            )
+        records = resp.json().get("records", [])
+        resultats["total"] = len(records)
+        logger.info(f"archiver_catalogue_complet: {len(records)} articles à archiver")
+    except Exception as e:
+        logger.error(f"archiver_catalogue_complet fetch: {e}")
+        return {"erreur": str(e)}
+
+    now = datetime.now(PARIS_TZ)
+    date_str = now.strftime("%d/%m/%Y")
+
+    for r in records:
+        f = r["fields"]
+        ref = f.get("Référence gestion", "")
+        if not ref:
+            continue
+
+        # Formater date achat
+        date_achat = f.get("Date achat", "") or ""
+        if date_achat and "-" in date_achat:
+            try:
+                from datetime import datetime as dt
+                date_achat = dt.strptime(date_achat[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
+            except Exception:
+                pass
+
+        # Formater date vente
+        date_vente = f.get("Date vente", "") or ""
+        if date_vente and "-" in date_vente:
+            try:
+                from datetime import datetime as dt
+                date_vente = dt.strptime(date_vente[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
+            except Exception:
+                date_vente = ""
+
+        payload = {
+            "event": "produit_archiver",
+            "data": {
+                "reference":           ref,
+                "description":         f.get("Description", ""),
+                "prix_achat_total":    f.get("Prix achat total") or 0,
+                "prix_achat_unitaire": float(f.get("Prix achat unitaire") or 0),
+                "qte_totale":          int(f.get("Quantite totale") or 0),
+                "qte_vendue":          int(f.get("Quantite vendue") or 0),
+                "prix_vente":          float(f.get("Prix vente") or 0),
+                "date_achat":          date_achat,
+                "date_vente":          date_vente,
+                "plateforme":          f.get("Plateforme vente") or "",
+                "frais_plateforme":    float(f.get("Frais plateforme") or 0),
+                "frais_transport":     float(f.get("Frais transport") or 0),
+                "source":              f.get("Source") or "",
+                "statut":              f.get("Statut") or "",
+                "notes":               f.get("Notes") or "",
+                "annonce_generee":     (f.get("Annonce générée") or "")[:200],
+            }
+        }
+
+        ok = await _envoyer_make(payload)
+        if ok:
+            resultats["archives"] += 1
+        else:
+            resultats["erreurs"] += 1
+
+    logger.info(f"✅ Catalogue archivé: {resultats['archives']}/{resultats['total']}")
     return resultats
