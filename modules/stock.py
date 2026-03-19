@@ -1,3 +1,4 @@
+import asyncio
 """  # v2.1 — update_etat_lot avec préservation Notes
 MODULE STOCK
 ──────────────────────────────────────────────────────────
@@ -365,17 +366,72 @@ async def update_status(ref: str, new_status_raw: str, plateforme: str = "") -> 
                 json={"fields": update_fields}
             )
 
-        if resp.status_code == 200:
-            emoji_map = {
-                "acheté": "🛒", "en ligne": "🟢", "en cours d'expédition": "📬",
-                "livré": "📦", "vendu": "✅", "en stockage": "🏭", "en rénovation": "🔧"
+        if resp.status_code != 200:
+            return f"⚠️ Erreur Airtable: {resp.status_code} — {resp.text[:100]}"
+
+        fields_record = records[0].get("fields", {})
+        qte_totale = int(fields_record.get("Quantite totale") or 1)
+        qte_vendue = int(fields_record.get("Quantite vendue") or 0)
+
+        # ── Actions selon le nouveau statut ──────────────────────────────────
+
+        # Si vendu : décrémenter quantités
+        if new_status == "vendu":
+            nouvelle_qte_totale = max(0, qte_totale - 1)
+            nouvelle_qte_vendue = qte_vendue + 1
+            qte_fields = {
+                "Quantite totale": nouvelle_qte_totale,
+                "Quantite vendue": nouvelle_qte_vendue,
             }
-            emoji = emoji_map.get(new_status, "🔄")
-            msg = f"{emoji} *{ref}* : `{old_status}` → `{new_status}`"
-            if plateforme:
-                msg += f" ({plateforme})"
-            return msg
-        return f"⚠️ Erreur Airtable: {resp.status_code} — {resp.text[:100]}"
+            # Si lot soldé → garder statut vendu, sinon repasser en ligne
+            if nouvelle_qte_totale > 0:
+                qte_fields["Statut"] = "en ligne"  # Reste en ligne si stock restant
+            async with httpx.AsyncClient(timeout=20) as http:
+                await http.patch(
+                    f"{AIRTABLE_URL}/{TABLE_PRODUITS}/{record_id}",
+                    headers=HEADERS,
+                    json={"fields": qte_fields}
+                )
+            # Déclencher archivage de la vente
+            try:
+                from modules.archive import traiter_vente
+                pa = float(fields_record.get("Prix achat unitaire") or 0)
+                pv = float(fields_record.get("Prix vente") or 0)
+                ref_gestion = fields_record.get("Référence gestion", ref)
+                if pv > 0:
+                    asyncio.create_task(traiter_vente(
+                        ref=ref_gestion, qte_vendue=1,
+                        prix_vente=pv, plateforme=plateforme or "Hors ligne"
+                    ))
+            except Exception as e:
+                logger.warning(f"Archivage vente {ref}: {e}")
+
+        # Si retour après livraison → remettre en cours d'expédition
+        elif new_status == "en cours d'expédition" and old_status == "livré":
+            logger.info(f"↩️ Retour détecté: {ref} livré → en cours d'expédition")
+
+        emoji_map = {
+            "acheté": "🛒", "en ligne": "🟢", "en cours d'expédition": "📬",
+            "livré": "📦", "vendu": "✅", "en stockage": "🏭", "en rénovation": "🔧"
+        }
+        emoji = emoji_map.get(new_status, "🔄")
+
+        # Message contextuel selon transition
+        qte_totale_new = int(records[0].get("fields", {}).get("Quantite totale") or qte_totale)
+        msg = f"{emoji} *{ref}* : `{old_status}` → `{new_status}`"
+        if plateforme:
+            msg += f" ({plateforme})"
+        if new_status == "vendu" and qte_totale > 1:
+            restant = max(0, qte_totale - 1)
+            msg += f"\n📦 Restant en stock : {restant} unité(s)"
+        if new_status == "en cours d'expédition":
+            msg += "\n📬 _Pense à marquer 'livré' quand le colis arrive_"
+        if new_status == "livré":
+            msg += "\n📦 _Attente confirmation acheteur → `/statut {ref} vendu` ou retour_"
+        if old_status == "livré" and new_status == "en cours d'expédition":
+            msg += "\n↩️ _Retour en cours — récupère le colis et décide de la suite_"
+
+        return msg
 
     except Exception as e:
         return f"⚠️ Erreur: {str(e)}"
