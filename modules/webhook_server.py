@@ -548,8 +548,48 @@ def create_webhook_app() -> web.Application:
     app.router.add_get("/health", handle_health)
     app.router.add_get("/webhook", handle_ebay_challenge)
     app.router.add_post("/webhook", handle_webhook)
+    app.router.add_post("/vente", handle_vente_form)
     return app
 
+
+
+
+async def handle_vente_form(request: web.Request) -> web.Response:
+    """
+    Endpoint simplifié pour Make.com.
+    Accepte application/x-www-form-urlencoded OU application/json.
+    Champs : secret, source, titre, prix, qte (optionnel)
+    """
+    try:
+        content_type = request.content_type or ""
+        if "json" in content_type:
+            data = await request.json()
+        else:
+            data = await request.post()
+            data = dict(data)
+
+        secret = data.get("secret", "")
+        if secret != WEBHOOK_SECRET:
+            return web.Response(text="unauthorized", status=401)
+
+        # Construire payload vente_confirmee
+        payload = {
+            "secret": secret,
+            "event": "vente_confirmee",
+            "source": data.get("source", "ebay"),
+            "titre": data.get("titre", ""),
+            "qte": int(data.get("qte", 1)),
+            "prix_vente": str(data.get("prix", data.get("prix_vente", "0"))),
+            "frais_plateforme": float(data.get("frais", 0)),
+        }
+
+        logger.info(f"📥 /vente reçu: {payload.get('titre','?')[:40]} — {payload.get('prix_vente')}€")
+        result = await traiter_vente_confirmee(payload)
+        return web.Response(text=result)
+
+    except Exception as e:
+        logger.error(f"handle_vente_form: {e}", exc_info=True)
+        return web.Response(text="error", status=500)
 
 async def start_webhook_server(chat_id: int, port: int = 8080):
     """Démarre le serveur webhook en parallèle du bot Telegram."""
