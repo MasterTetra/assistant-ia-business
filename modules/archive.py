@@ -501,45 +501,61 @@ async def sync_intelligent() -> dict:
                     logger.error(f"Correction description {ref}: {e}")
 
         # 3b. Détecter ventes hors ligne via snapshot
-        if ref in snapshot:
-            qte_snapshot = snapshot[ref]["qte"]
-            diff = qte_snapshot - qte_actuelle
+        statut_snapshot = snapshot.get(ref, {}).get("statut", "") if ref in snapshot else ""
+        qte_snapshot = snapshot[ref]["qte"] if ref in snapshot else None
 
-            if diff > 0:
-                # Vente détectée !
-                logger.info(f"📦 Vente hors ligne détectée: {ref} — {diff} unité(s) vendue(s)")
-                resultats["ventes_detectees"] += diff
+        # Cas 1 : quantité diminuée
+        diff_qte = 0
+        if qte_snapshot is not None:
+            diff_qte = qte_snapshot - qte_actuelle
 
-                # Archiver chaque unité vendue
-                for i in range(diff):
-                    marge_brute = round((pv - pa), 2) if pv and pa else 0
-                    resultat_net = round(marge_brute - frais_pf - frais_tr, 2)
+        # Cas 2 : statut passé à "vendu" sans changement de qté (lignes unitaires)
+        statut_vendu_detecte = (
+            statut == "vendu"
+            and statut_snapshot not in ("vendu", "")
+            and diff_qte == 0
+            and qte_snapshot is not None
+        )
 
-                    payload_vente = {
-                        "event": "vente_archiver",
-                        "data": {
-                            "date_vente": date_str,
-                            "reference": ref,
-                            "description": description[:60],
-                            "qte_vendue": 1,
-                            "prix_achat_unitaire": pa,
-                            "prix_vente": pv,
-                            "marge_brute": marge_brute,
-                            "frais_plateforme": frais_pf,
-                            "frais_transport": frais_tr,
-                            "resultat_net": resultat_net,
-                            "plateforme": plateforme or "Hors ligne",
-                            "statut": "vendu"
-                        }
+        # Nombre d'unités vendues à archiver
+        nb_a_archiver = diff_qte
+        if statut_vendu_detecte:
+            nb_a_archiver = int(qte_actuelle) if qte_actuelle > 0 else 1
+
+        if nb_a_archiver > 0 or statut_vendu_detecte:
+            logger.info(f"📦 Vente hors ligne détectée: {ref} — {nb_a_archiver} unité(s)")
+            resultats["ventes_detectees"] += nb_a_archiver
+
+            marge_brute = round((pv - pa), 2) if pv and pa else 0
+            resultat_net = round(marge_brute - frais_pf - frais_tr, 2)
+
+            # Archiver chaque unité vendue
+            for i in range(max(nb_a_archiver, 1)):
+                payload_vente = {
+                    "event": "vente_archiver",
+                    "data": {
+                        "date_vente": date_str,
+                        "reference": ref,
+                        "description": description[:60],
+                        "qte_vendue": 1,
+                        "prix_achat_unitaire": pa,
+                        "prix_vente": pv,
+                        "marge_brute": marge_brute,
+                        "frais_plateforme": frais_pf,
+                        "frais_transport": frais_tr,
+                        "resultat_net": resultat_net,
+                        "plateforme": plateforme or "Hors ligne",
+                        "statut": "vendu"
                     }
-                    ok = await _envoyer_make(payload_vente)
-                    if ok:
-                        resultats["archives"] += 1
-                    else:
-                        resultats["erreurs"] += 1
+                }
+                ok = await _envoyer_make(payload_vente)
+                if ok:
+                    resultats["archives"] += 1
+                else:
+                    resultats["erreurs"] += 1
 
-        # 3c. Si qté = 0 et pas encore archivé dans PRODUITS ARCHIVÉS
-        if qte_actuelle == 0 and statut != "vendu":
+        # 3c. Si qté = 0 OU statut vendu → archiver + supprimer Airtable
+        if (qte_actuelle == 0 or statut == "vendu") and statut_snapshot not in ("vendu", ""):
             logger.info(f"🏁 Lot soldé détecté: {ref}")
             await _patch_lot(record_id, {"Statut": "vendu"})
 
@@ -573,5 +589,135 @@ async def sync_intelligent() -> dict:
     records_actifs = [r["fields"] for r in at_records if r["fields"].get("Statut") not in ("vendu",)]
     await ecrire_snapshot(records_actifs)
     logger.info(f"✅ Snapshot mis à jour: {len(records_actifs)} records actifs")
+
+    return resultats
+
+
+async def traiter_articles_vendus() -> dict:
+    """
+    Scanne Airtable et traite immédiatement :
+    - Articles avec statut "vendu"
+    - Articles avec Quantite totale = 0
+    Archive dans Sheets VENTES + PRODUITS ARCHIVÉS + supprime Airtable.
+    """
+    resultats = {"traites": 0, "archives_ventes": 0, "archives_produits": 0, "supprimes": 0, "erreurs": 0}
+    now = datetime.now(PARIS_TZ)
+    date_str = now.strftime("%d/%m/%Y")
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as http:
+            # Récupérer tous les articles vendus ou soldés
+            resp = await http.get(
+                f"{AIRTABLE_URL}/{TABLE}",
+                headers=HEADERS_AT,
+                params={
+                    "filterByFormula": 'OR({Statut}="vendu", {Quantite totale}=0)',
+                    "fields[]": [
+                        "Référence gestion", "Description", "Statut",
+                        "Quantite totale", "Quantite vendue",
+                        "Prix achat unitaire", "Prix achat total",
+                        "Prix vente", "Date achat", "Date vente",
+                        "Source", "Plateforme vente", "Frais plateforme",
+                        "Frais transport", "Notes", "Annonce générée"
+                    ],
+                    "maxRecords": 200,
+                }
+            )
+        records = resp.json().get("records", [])
+        logger.info(f"traiter_articles_vendus: {len(records)} article(s) à traiter")
+    except Exception as e:
+        logger.error(f"traiter_articles_vendus fetch: {e}")
+        return {"erreur": str(e)}
+
+    for r in records:
+        f = r["fields"]
+        record_id = r["id"]
+        ref = f.get("Référence gestion", "?")
+        description = f.get("Description", "")
+        statut = f.get("Statut", "")
+        qte_totale = int(f.get("Quantite totale") or 0)
+        qte_vendue = int(f.get("Quantite vendue") or 0)
+        pa = float(f.get("Prix achat unitaire") or 0)
+        pv = float(f.get("Prix vente") or 0)
+        plateforme = f.get("Plateforme vente") or "Hors ligne"
+        frais_pf = float(f.get("Frais plateforme") or 0)
+        frais_tr = float(f.get("Frais transport") or 0)
+        date_vente = f.get("Date vente", "") or date_str
+
+        # Formater la date
+        if date_vente and len(date_vente) == 10 and "-" in date_vente:
+            try:
+                from datetime import datetime as dt
+                date_vente = dt.strptime(date_vente, "%Y-%m-%d").strftime("%d/%m/%Y")
+            except Exception:
+                pass
+
+        marge_brute = round((pv - pa) * max(qte_vendue, 1), 2) if pv and pa else 0
+        resultat_net = round(marge_brute - frais_pf - frais_tr, 2)
+
+        resultats["traites"] += 1
+
+        # 1. Archiver dans Sheets VENTES (une ligne par unité vendue)
+        nb_ventes = max(qte_vendue, 1)
+        for i in range(nb_ventes):
+            payload_vente = {
+                "event": "vente_archiver",
+                "data": {
+                    "date_vente": date_vente,
+                    "reference": ref,
+                    "description": description[:60],
+                    "qte_vendue": 1,
+                    "prix_achat_unitaire": pa,
+                    "prix_vente": pv,
+                    "marge_brute": round((pv - pa), 2) if pv and pa else 0,
+                    "frais_plateforme": round(frais_pf / nb_ventes, 2) if nb_ventes > 0 else frais_pf,
+                    "frais_transport": round(frais_tr / nb_ventes, 2) if nb_ventes > 0 else frais_tr,
+                    "resultat_net": round(resultat_net / nb_ventes, 2),
+                    "plateforme": plateforme,
+                    "statut": "vendu"
+                }
+            }
+            ok = await _envoyer_make(payload_vente)
+            if ok:
+                resultats["archives_ventes"] += 1
+            else:
+                resultats["erreurs"] += 1
+
+        # 2. Archiver dans PRODUITS ARCHIVÉS
+        payload_produit = {
+            "event": "produit_archiver",
+            "data": {
+                "reference": ref,
+                "description": description,
+                "prix_achat_total": f.get("Prix achat total") or 0,
+                "prix_achat_unitaire": pa,
+                "qte_totale": f.get("Quantite totale") or 0,
+                "qte_vendue": qte_vendue,
+                "prix_vente": pv,
+                "date_achat": f.get("Date achat") or "",
+                "date_vente": date_vente,
+                "plateforme": plateforme,
+                "frais_plateforme": frais_pf,
+                "frais_transport": frais_tr,
+                "source": f.get("Source") or "",
+                "statut": "vendu",
+                "notes": f.get("Notes") or "",
+                "annonce_generee": (f.get("Annonce générée") or "")[:200],
+            }
+        }
+        ok_prod = await _envoyer_make(payload_produit)
+        if ok_prod:
+            resultats["archives_produits"] += 1
+
+        # 3. Supprimer de Airtable seulement si archivage réussi
+        if ok_prod:
+            ok_del = await _supprimer_lot(record_id)
+            if ok_del:
+                resultats["supprimes"] += 1
+                logger.info(f"✅ {ref} archivé + supprimé Airtable")
+            else:
+                logger.error(f"❌ {ref} archivé mais suppression Airtable échouée")
+        else:
+            logger.error(f"❌ {ref} archivage produit échoué — suppression annulée")
 
     return resultats
