@@ -2635,19 +2635,22 @@ async def cmd_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await thinking.edit_text(f"⚠️ Erreur : {e}")
 
     elif mode == "sync":
-        thinking = await update.message.reply_text("🔄 Synchronisation ventes → Google Sheets...")
+        thinking = await update.message.reply_text("🔄 Sync intelligent en cours...")
         try:
-            from modules.archive import sync_ventes_vers_sheets
-            result = await sync_ventes_vers_sheets()
+            from modules.archive import sync_intelligent
+            result = await sync_intelligent()
             await thinking.edit_text(
-                f"✅ *Synchronisation terminée*\n"
-                f"  • {result.get('archives', 0)}/{result.get('total', 0)} produits archivés\n"
-                f"  • {result.get('echecs', 0)} échec(s)\n"
-                f"_Vérifie l'onglet PRODUITS ARCHIVÉS dans Google Sheets_",
+                f"✅ *Sync terminé*\n"
+                f"  • {result.get('ventes_detectees', 0)} vente(s) hors ligne détectée(s)\n"
+                f"  • {result.get('archives', 0)} ligne(s) archivée(s) dans Sheets\n"
+                f"  • {result.get('corrections_desc', 0)} description(s) corrigée(s)\n"
+                f"  • {result.get('erreurs', 0)} erreur(s)\n"
+                f"_Snapshot mis à jour_",
                 parse_mode="Markdown"
             )
         except Exception as e:
-            await thinking.edit_text(f"⚠️ Erreur : {e}")
+            logger.error(f"archive sync manuel: {e}", exc_info=True)
+            await thinking.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
 
     elif mode == "help":
         await update.message.reply_text(
@@ -3209,16 +3212,41 @@ async def _scheduler_exports(app):
                 except Exception as e:
                     logger.error(f"Micro-audit auto: {e}")
 
-            # ── Archive sync quotidien 23h59 ─────────────────────────────────
+            # ── Sync intelligent quotidien 23h59 ──────────────────────────────
             is_2359 = (now.hour == 23 and now.minute == 59)
             if is_2359:
-                logger.info("📦 Scheduler: archive sync automatique")
+                logger.info("📦 Scheduler: sync intelligent automatique")
                 try:
-                    from modules.archive import sync_ventes_vers_sheets
-                    result = await sync_ventes_vers_sheets()
-                    logger.info(f"✅ Archive sync: {result.get('archives',0)}/{result.get('total',0)} archivés")
+                    from modules.archive import sync_intelligent
+                    result = await sync_intelligent()
+                    ventes = result.get("ventes_detectees", 0)
+                    archives = result.get("archives", 0)
+                    corrections = result.get("corrections_desc", 0)
+                    logger.info(f"✅ Sync: {ventes} vente(s) détectée(s), {archives} archivée(s), {corrections} desc corrigée(s)")
+                    # Notif Telegram si ventes hors ligne détectées
+                    if ventes > 0:
+                        import os as _os
+                        from config.settings import SUPERGROUP_ID, TOPICS, TELEGRAM_TOKEN
+                        msg = (
+                            f"📊 *Sync quotidien 23h59*\n"
+                            f"━━━━━━━━━━━━━━━━━━━━\n"
+                            f"📦 {ventes} vente(s) hors ligne détectée(s)\n"
+                            f"💾 {archives} ligne(s) archivée(s) dans Sheets\n"
+                            f"✏️ {corrections} description(s) corrigée(s)\n"
+                            f"━━━━━━━━━━━━━━━━━━━━"
+                        )
+                        async with httpx.AsyncClient(timeout=15) as http:
+                            await http.post(
+                                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                                json={
+                                    "chat_id": SUPERGROUP_ID,
+                                    "message_thread_id": TOPICS.get("sales_notifications"),
+                                    "text": msg,
+                                    "parse_mode": "Markdown"
+                                }
+                            )
                 except Exception as e:
-                    logger.error(f"Archive sync auto: {e}")
+                    logger.error(f"Sync intelligent auto: {e}")
 
             # ── Veille mensuelle : 1er du mois à 9h00 ───────────────────────
             is_1er_mois_9h = (now.day == 1 and now.hour == 9 and now.minute == 0)
