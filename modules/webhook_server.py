@@ -592,7 +592,8 @@ async def traiter_vente_confirmee(payload: dict) -> str:
     ref       = payload.get("ref", "").strip()
     titre     = payload.get("titre", "").strip()
     qte       = int(payload.get("qte") or 1)
-    prix      = float(payload.get("prix_vente") or 0)
+    prix_raw  = str(payload.get("prix_vente") or "0").replace(",", ".").replace(" ", "")
+    prix      = float(prix_raw) if prix_raw else 0.0
     frais_pf  = float(payload.get("frais_plateforme") or 0)
     frais_tr  = float(payload.get("frais_transport") or 0)
 
