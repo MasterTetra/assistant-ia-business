@@ -800,20 +800,33 @@ async def traiter_expedition_confirmee(payload: dict) -> str:
 
         # Article unique → statut automatique
         # Lot partiel → ne pas toucher au statut
+        update_fields = {}
         if qte_totale <= 1:
-            await _patch_lot(record_id, {"Statut": "en cours d'expédition"})
-            statut_msg = "Statut : en cours d'expedition"
-        else:
-            statut_msg = f"Lot de {qte_totale} - statut inchange ({statut_act})"
+            update_fields["Statut"] = "en cours d'expédition"
+        if transporteur:
+            update_fields["Transporteur"] = transporteur
+        if num_suivi:
+            update_fields["Numéro suivi"] = num_suivi
+        if update_fields:
+            await _patch_lot(record_id, update_fields)
 
-        await _notif_telegram(
+        now_str = datetime.now(PARIS_TZ).strftime("%d/%m/%Y %H:%M")
+        statut_msg = "Statut : en cours expedition" if qte_totale <= 1 else f"Lot de {qte_totale} - statut inchange"
+        transp_msg = f"Transporteur : {transporteur}" if transporteur else "Transporteur : non renseigne"
+        suivi_msg = f"N suivi : {num_suivi}" if num_suivi else "N suivi : non renseigne"
+
+        msg_exp = (
             f"EXPEDITION {source_label}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
             f"{description}\n"
-            f"{ref_gestion}\n"
+            f"Ref : {ref_gestion}\n"
+            f"Date : {now_str}\n"
             f"{statut_msg}\n"
-            f"Marque 'livre' quand l'acheteur recoit le colis",
-            topic="sales"
+            f"{transp_msg}\n"
+            f"{suivi_msg}\n"
+            f"━━━━━━━━━━━━━━━━━━━━"
         )
+        await _notif_telegram(msg_exp, topic="sales")
         return "ok"
     except Exception as e:
         logger.error(f"traiter_expedition_confirmee: {e}", exc_info=True)
