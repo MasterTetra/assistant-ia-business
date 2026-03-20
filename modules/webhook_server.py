@@ -796,7 +796,7 @@ async def traiter_expedition_confirmee(payload: dict) -> str:
         qte_totale  = int(lot.get("Quantite totale") or 1)
         statut_act  = lot.get("Statut", "")
         description = lot.get("Description", "?")[:40]
-        ref_gestion = lot.get("Reference gestion", ref)
+        ref_gestion = lot.get("Référence gestion", ref)
 
         # Article unique → statut automatique
         # Lot partiel → ne pas toucher au statut
