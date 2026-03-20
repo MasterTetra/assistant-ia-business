@@ -101,34 +101,71 @@ async def get_next_location() -> str:
 # ─────────────────────────────────────────────
 
 async def get_next_ref() -> str:
-    """Génère la prochaine référence interne (REF-YYYY-NNNN)."""
-    year = datetime.now().year
+    """
+    Génère la prochaine référence gestion au format AV-YYYYMMDD-NNNN.
+    Le numéro est TOUJOURS croissant — même si des lignes sont supprimées.
+    Stratégie : cherche le max dans Airtable ET dans Google Sheets VENTES,
+    puis incrémente de 1.
+    """
+    from datetime import datetime as dt
+    today = dt.now().strftime("%Y%m%d")
+    max_num = 0
+
+    # 1. Chercher dans Airtable (articles actifs)
     try:
         async with httpx.AsyncClient(timeout=20) as http:
-            params = {
-                "filterByFormula": f"FIND('{year}', {{Référence}})",
-                "fields[]": ["Référence"],
-                "sort[0][field]": "Référence",
-                "sort[0][direction]": "desc",
-                "maxRecords": 1
-            }
             resp = await http.get(
                 f"{AIRTABLE_URL}/{TABLE_PRODUITS}",
                 headers=HEADERS,
-                params=params
+                params={
+                    "fields[]": ["Référence gestion"],
+                    "sort[0][field]": "Référence gestion",
+                    "sort[0][direction]": "desc",
+                    "maxRecords": 1
+                }
             )
             if resp.status_code == 200:
                 records = resp.json().get("records", [])
                 if records:
-                    last_ref = records[0]["fields"].get("Référence", "")
-                    # REF-2025-0047 → extraire 47
-                    parts = last_ref.split("-")
-                    if len(parts) == 3:
-                        num = int(parts[2]) + 1
-                        return f"REF-{year}-{num:04d}"
+                    ref = records[0]["fields"].get("Référence gestion", "")
+                    # Format AV-YYYYMMDD-NNNN
+                    parts = ref.split("-")
+                    if len(parts) == 3 and parts[0] == "AV":
+                        try:
+                            num = int(parts[2])
+                            max_num = max(max_num, num)
+                        except ValueError:
+                            pass
     except Exception:
         pass
-    return f"REF-{year}-0001"
+
+    # 2. Chercher dans Google Sheets VENTES (articles archivés/supprimés)
+    try:
+        from modules.gsheets_direct import _get_access_token
+        import os
+        sheet_id = os.getenv("GOOGLE_SHEET_ID", "")
+        if sheet_id:
+            token = await _get_access_token()
+            url = f"https://sheets.googleapis.com/v4/spreadsheets/{sheet_id}/values/VENTES!B2:B10000"
+            async with httpx.AsyncClient(timeout=15) as http:
+                resp = await http.get(url, headers={"Authorization": f"Bearer {token}"})
+            if resp.status_code == 200:
+                rows = resp.json().get("values", [])
+                for row in rows:
+                    if row:
+                        ref = row[0].strip()
+                        parts = ref.split("-")
+                        if len(parts) == 3 and parts[0] == "AV":
+                            try:
+                                num = int(parts[2])
+                                max_num = max(max_num, num)
+                            except ValueError:
+                                pass
+    except Exception:
+        pass
+
+    next_num = max_num + 1
+    return f"AV-{today}-{next_num:04d}"
 
 
 # ─────────────────────────────────────────────
