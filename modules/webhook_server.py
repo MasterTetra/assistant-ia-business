@@ -767,9 +767,11 @@ async def traiter_expedition_confirmee(payload: dict) -> str:
     if secret != WEBHOOK_SECRET:
         return "unauthorized"
 
-    source = payload.get("source", "inconnu").lower()
-    ref    = payload.get("ref", "").strip()
-    titre  = payload.get("titre", "").strip()
+    source       = payload.get("source", "inconnu").lower()
+    ref          = payload.get("ref", "").strip()
+    titre        = payload.get("titre", "").strip()
+    transporteur = payload.get("transporteur", "").strip()
+    num_suivi    = payload.get("num_suivi", "").strip()
     source_label = {"lbc": "LeBonCoin", "leboncoin": "LeBonCoin",
                     "vinted": "Vinted", "ebay": "eBay"}.get(source, source.upper())
     logger.info(f"📬 Expedition confirmee [{source_label}]: {ref or titre[:30]}")
