@@ -75,7 +75,7 @@ async def _get_lot_by_description(titre_mail: str) -> dict | None:
             formule = (
                 f'AND('
                 f'FIND(LOWER("{titre_court.lower()}"), LOWER({{Description}}))>0,'
-                f'OR({{Statut}}="en ligne",{{Statut}}="acheté")'
+                f'OR({{Statut}}="en ligne",{{Statut}}="acheté",{{Statut}}="en cours d\'expédition",{{Statut}}="livré")'
                 f')'
             )
             resp = await http.get(
@@ -95,7 +95,7 @@ async def _get_lot_by_description(titre_mail: str) -> dict | None:
             formule2 = (
                 f'AND('
                 f'FIND(LOWER("{titre_court.lower()}"), LOWER({{Annonce générée}}))>0,'
-                f'OR({{Statut}}="en ligne",{{Statut}}="acheté")'
+                f'OR({{Statut}}="en ligne",{{Statut}}="acheté",{{Statut}}="en cours d\'expédition",{{Statut}}="livré")'
                 f')'
             )
             resp2 = await http.get(
@@ -119,7 +119,7 @@ async def _get_lot_by_description(titre_mail: str) -> dict | None:
                 ])
                 formule3 = (
                     f'AND('
-                    f'OR({{Statut}}="en ligne",{{Statut}}="acheté"),'
+                    f'OR({{Statut}}="en ligne",{{Statut}}="acheté",{{Statut}}="en cours d\'expédition",{{Statut}}="livré"),'
                     f'AND({conditions})'
                     f')'
                 )
