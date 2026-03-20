@@ -887,17 +887,29 @@ async def traiter_vente_finalisee(payload: dict) -> str:
         net       = result.get("resultat_net", 0)
         restant   = result.get("qte_restante", 0)
 
-        emoji = "SOLDE" if lot_solde else "OK"
+        emoji = "Lot solde" if lot_solde else "OK"
+        marge_brute = result.get("marge_brute", 0)
+        # Afficher le net uniquement si les frais plateforme sont renseignes
+        frais_pf = float(payload.get("frais_plateforme") or 0)
+        prix_affiche = prix if prix > 0 else float(lot.get("Prix vente") or 0)
+        if frais_pf > 0:
+            prix_line = f"Prix : {prix_affiche}EUR | Net : {net}EUR"
+        else:
+            prix_line = f"Prix : {prix_affiche}EUR"
+
         msg = (
             f"VENTE FINALISEE {source_label} [{emoji}]\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
             f"{desc}\n"
-            f"{ref_gestion}\n"
-            f"Prix : {prix}EUR | Net : {net}EUR\n"
+            f"Ref : {ref_gestion}\n"
+            f"{prix_line}\n"
+            f"Marge brute : {marge_brute}EUR\n"
         )
         if lot_solde:
-            msg += "Lot solde - archive + supprime Airtable"
+            msg += "Lot solde - archive + supprime Airtable\n"
         else:
-            msg += f"Restant : {restant} unite(s)"
+            msg += f"Restant : {restant} unite(s)\n"
+        msg += "━━━━━━━━━━━━━━━━━━━━"
 
         await _notif_telegram(msg, topic="sales")
         return "ok"
