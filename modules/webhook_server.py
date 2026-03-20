@@ -16,6 +16,12 @@ import logging
 import os
 from aiohttp import web
 from datetime import datetime
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
+
+PARIS_TZ = ZoneInfo("Europe/Paris")
 
 from config.settings import (
     AIRTABLE_API_KEY, AIRTABLE_BASE_ID, TABLE_PRODUITS,
@@ -385,6 +391,14 @@ async def handle_makecom_notification(payload: dict) -> str:
     # Router vers l'analyseur d'opportunités si c'est une alerte achat
     if event == "alerte_achat":
         return await analyser_alerte_achat(payload)
+
+    # Router vers les nouveaux handlers de cycle de vente
+    if event == "vente_confirmee":
+        return await traiter_vente_confirmee(payload)
+    if event == "expedition_confirmee":
+        return await traiter_expedition_confirmee(payload)
+    if event == "vente_finalisee":
+        return await traiter_vente_finalisee(payload)
     titre_brut = payload.get("titre", "")
     prix = float(payload.get("prix", 0))
     ref = payload.get("ref", None)
