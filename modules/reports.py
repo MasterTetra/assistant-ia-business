@@ -376,7 +376,8 @@ async def generate_stock_report() -> str:
         ("en cours d'expédition","📬", "En cours d'expédition"),
         ("livré",                "📦", "Livré (attente confirmation)"),
         ("en stockage",          "🏭", "En stockage"),
-        ("en rénovation", "retour en cours",        "🔧", "En rénovation"),
+        ("en rénovation",          "🔧", "En rénovation"),
+        ("retour en cours",       "↩️", "Retour en cours"),
     ]
 
     lines = [
