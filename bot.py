@@ -414,6 +414,15 @@ async def _afficher_annonce_avec_boutons(msg, data_flux: dict, ref: str):
         await msg.reply_text(annonce_txt, reply_markup=keyboard)
 
 
+async def _generer_rapport(query, periode: str):
+    try:
+        from modules.reports import generate_report
+        result = await generate_report(periode)
+        await query.edit_message_text(result[:4000], parse_mode="Markdown")
+    except Exception as e:
+        await query.edit_message_text(f"Erreur rapport: {e}")
+
+
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
