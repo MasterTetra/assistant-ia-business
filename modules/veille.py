@@ -161,6 +161,7 @@ async def generer_veille_mensuelle():
     await _construire_et_envoyer_message(
         items_reg, items_tech, mois_label, now.year, date_veille
     )
+    return items_reg, items_tech
 
 
 async def _construire_et_envoyer_message(
