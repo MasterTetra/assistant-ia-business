@@ -2547,11 +2547,21 @@ async def cmd_veille(update: Update, context: ContextTypes.DEFAULT_TYPE):
         mois = MOIS_FR[now.month]
 
         if mode == "all":
-            await generer_veille_mensuelle()
-            await thinking.edit_text(
-                "✅ *Veille mensuelle envoyée*\n_Résumé dans le topic Audit_",
-                parse_mode="Markdown"
-            )
+            items_r, items_t = await generer_veille_mensuelle()
+            titres_reg = [f"  • {i.get('sujet','?')} [{i.get('impact','?')}]" for i in items_r[:3]]
+            titres_tech = [f"  • {i.get('sujet','?')} [{i.get('impact','?')}]" for i in items_t[:3]]
+            resume = "✅ *Veille mensuelle archivée*\n"
+            resume += f"📅 {now.strftime('%d/%m/%Y')}\n━━━━━━━━━━━━━━\n"
+            if titres_reg:
+                resume += "📋 *Réglementaire :*\n" + "\n".join(titres_reg) + "\n"
+            else:
+                resume += "📋 Réglementaire : aucune nouveauté\n"
+            if titres_tech:
+                resume += "🤖 *Techno :*\n" + "\n".join(titres_tech) + "\n"
+            else:
+                resume += "🤖 Techno : aucune nouveauté\n"
+            resume += "_Détail complet → topic Audit + Google Sheets_"
+            await thinking.edit_text(resume, parse_mode="Markdown")
         elif mode == "reg":
             items = await _appel_claude_web(
                 PROMPT_VEILLE_REGLEMENTAIRE.format(mois=mois, annee=now.year))
