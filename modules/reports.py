@@ -249,7 +249,7 @@ async def generate_report(periode: str = "semaine") -> str:
     s_expedition = nb_statut("en cours d'expédition")
     s_livre      = nb_statut("livré")
     s_stockage   = nb_statut("en stockage")
-    s_renovation = nb_statut("en rénovation", "retour en cours")
+    s_renovation = nb_statuts(["en rénovation", "retour en cours"])
 
     capital_stock = _capital_periode([f for f in fl if f.get("Statut") in STATUTS_STOCK])
     potentiel = sum(float(f.get("Prix vente") or 0) for f in fl if f.get("Statut") == "en ligne")
@@ -340,26 +340,6 @@ async def generate_report(periode: str = "semaine") -> str:
 
     rapport_texte = "\n".join(lines)
 
-    # ── Archivage automatique dans Google Sheets (hebdo/mensuel/annuel) ───────
-    if periode in ("semaine", "mois", "annuel"):
-        try:
-            from modules.gsheets import archiver_rapport_compta
-            periode_label = {"semaine": "hebdo", "mois": "mensuel", "annuel": "annuel"}
-            await archiver_rapport_compta(periode_label[periode], {
-                "ca": ca, "ventes": nb_vendus,
-                "cout_achat": cout_vendus,
-                "frais_plateforme": fp_total,
-                "frais_transport": ft_total,
-                "tva": tva_total,
-                "is_estime": is_estime,
-                "resultat_net": mn_nette,
-                "capital_stock": capital_stock,
-                "articles_en_ligne": s_en_ligne,
-                "articles_achetes": s_achete,
-            })
-        except Exception as e:
-            logger.warning(f"GSheets rapport ignoré: {e}")
-
     return rapport_texte
 
 
@@ -403,25 +383,5 @@ async def generate_stock_report() -> str:
     capital = _capital_periode(actifs)
     lines += ["", f"💰 Capital actif immobilisé : *{capital:.2f}€*"]
     rapport_texte = "\n".join(lines)
-
-    # ── Archivage automatique dans Google Sheets (hebdo/mensuel/annuel) ───────
-    if periode in ("semaine", "mois", "annuel"):
-        try:
-            from modules.gsheets import archiver_rapport_compta
-            periode_label = {"semaine": "hebdo", "mois": "mensuel", "annuel": "annuel"}
-            await archiver_rapport_compta(periode_label[periode], {
-                "ca": ca, "ventes": nb_vendus,
-                "cout_achat": cout_vendus,
-                "frais_plateforme": fp_total,
-                "frais_transport": ft_total,
-                "tva": tva_total,
-                "is_estime": is_estime,
-                "resultat_net": mn_nette,
-                "capital_stock": capital_stock,
-                "articles_en_ligne": s_en_ligne,
-                "articles_achetes": s_achete,
-            })
-        except Exception as e:
-            logger.warning(f"GSheets rapport ignoré: {e}")
 
     return rapport_texte
