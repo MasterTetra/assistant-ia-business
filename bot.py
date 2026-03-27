@@ -1535,16 +1535,6 @@ async def cmd_rapport(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
-async def cmd_stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Rapport détaillé du stock par statut."""
-    thinking = await update.message.reply_text("📦 Analyse du stock...")
-    try:
-        from modules.reports import generate_stock_report
-        result = await generate_stock_report()
-        await thinking.edit_text(result, parse_mode="Markdown")
-    except Exception as e:
-        await thinking.edit_text(f"⚠️ Erreur stock: {e}")
-
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_authorized(user_id):
@@ -2180,21 +2170,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_vendre(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /vendre — Active le mode vente complet
-    Envoyer ensuite les photos avec légende
+    /vendre — Redirige vers le flux photo principal
     """
-    session = get_session(update.effective_user.id)
-    session["mode"] = "vendre_attente_photos"
-    session["vendre_photos"] = []
-    session["vendre_caption"] = ""
-    session["vendre_data"] = None
-    session["vendre_ref"] = None
     await update.message.reply_text(
-        "🛍️ MODE VENTE ACTIVE\n\n"
-        "Envoie maintenant les photos de l'objet.\n"
-        "Ajoute en légende les infos que tu connais :\n\n"
-        "Exemple : César Baldaccini lampe cristal Daum - très bon état - manque abat-jour\n\n"
-        "Quand toutes les photos sont envoyées → /analyser"
+        "📸 *Pour analyser et créer une fiche produit :*\n\n"
+        "Envoie directement la photo de l'objet avec une légende décrivant l'article.\n\n"
+        "Exemple de légende :\n"
+        "_Porte-clé Renault Sport métal - neuf sous blister_\n\n"
+        "Le bot analysera automatiquement la photo et te proposera une fiche complète.",
+        parse_mode="Markdown"
     )
 
 async def cmd_analyser(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2611,7 +2595,6 @@ async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
         thinking = await update.message.reply_text(f"📊 Export {mode} en cours...")
         try:
             from modules.reports import generate_report
-            from modules.accounting import generate_accounting_report
             periode_map = {"hebdo": "semaine", "mensuel": "mois", "annuel": "annuel"}
             rapport = await generate_report(periode_map[mode])
             ca_match = __import__("re").search(r"Chiffre d.affaires.*?(\d+[.,]\d+)", rapport)
@@ -3185,7 +3168,7 @@ async def _scheduler_exports(app):
                 logger.info("🔍 Scheduler: veille mensuelle automatique")
                 try:
                     from modules.veille import generer_veille_mensuelle
-                    await generer_veille_mensuelle()
+                    await generer_veille_mensuelle()  # retourne (items_r, items_t) ignoré ici
                     logger.info("✅ Veille mensuelle envoyée")
                 except Exception as e:
                     logger.error(f"Veille mensuelle auto: {e}")
