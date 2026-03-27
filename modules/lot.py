@@ -48,6 +48,17 @@ FIN_DESCRIPTION
 CONSEIL: [conseil court pour maximiser la vente]"""
 
 
+
+async def _get_next_ref_av():
+    """Génère une référence AV-YYYYMMDD-NNNN via get_next_ref."""
+    try:
+        from modules.stock import get_next_ref
+        return await get_next_ref()
+    except Exception:
+        from datetime import datetime
+        return f"AV-{datetime.now().strftime('%Y%m%d')}-0001"
+
+
 async def _claude_call_with_retry(func, *args, **kwargs):
     for attempt in range(4):
         try:
@@ -236,13 +247,13 @@ async def generer_ref_gestion() -> str:
         nums = []
         for r in records:
             ref = r.get("fields", {}).get("Référence gestion", "")
-            m = re.search(r'RG-\d{4}-(\d+)', ref)
+            m = re.search(r'AV-\d{8}-(\d+)', ref)
             if m:
                 nums.append(int(m.group(1)))
         next_num = max(nums) + 1 if nums else 1
-        return f"RG-{annee}-{str(next_num).zfill(3)}"
+        return await _get_next_ref_av()
     except:
-        return f"RG-{annee}-001"
+        return await _get_next_ref_av()
 
 
 async def archiver_airtable_lot(data: dict, ref_gestion: str) -> bool:
