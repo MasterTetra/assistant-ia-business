@@ -2580,100 +2580,64 @@ async def cmd_veille(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 
-async def cmd_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /archive test  → envoie payloads de test à Make.com pour configurer les onglets
-    /archive sync  → synchronise tous les produits vendus vers Google Sheets
+    /export          → aide
+    /export hebdo    → rapport hebdo → Google Sheets
+    /export mensuel  → rapport mensuel
+    /export annuel   → rapport annuel
+    /export sync     → sync tous les vendus → Sheets
+    /export vente REF QTE PRIX → enregistre vente manuellement
     """
+    import os as _os
     mode = context.args[0].lower() if context.args else "help"
 
-    if mode == "test":
-        thinking = await update.message.reply_text("🧪 Envoi payloads test vers Make.com...")
+    if mode == "help":
+        await update.message.reply_text(
+            "📊 *Commandes export :*\n"
+            "  `/export hebdo` → rapport hebdo → Sheets\n"
+            "  `/export mensuel` → rapport mensuel → Sheets\n"
+            "  `/export annuel` → rapport annuel → Sheets\n"
+            "  `/export sync` → sync articles vendus → Sheets\n"
+            "  `/export vente REF QTE PRIX` → enregistre vente manuellement",
+            parse_mode="Markdown"
+        )
+
+    elif mode in ("hebdo", "mensuel", "annuel"):
+        if not _os.getenv("MAKE_WEBHOOK_SHEETS"):
+            await update.message.reply_text("⚠️ MAKE_WEBHOOK_SHEETS non configuré")
+            return
+        thinking = await update.message.reply_text(f"📊 Export {mode} en cours...")
         try:
-            import os as _os
-            webhook = _os.getenv("MAKE_WEBHOOK_SHEETS", "")
-            if not webhook:
-                await thinking.edit_text("⚠️ MAKE_WEBHOOK_SHEETS non configuré")
-                return
-
-            # Payload test vente_archiver
-            payload_vente = {
-                "secret": "cashbert-secret-2026",
-                "event": "vente_archiver",
-                "data": {
-                    "date_vente": "18/03/2026",
-                    "reference": "AV-20260316-0001",
-                    "description": "Porte-clé Renault Sport",
-                    "qte_vendue": 1,
-                    "prix_achat_unitaire": 0.10,
-                    "prix_vente": 8.50,
-                    "marge_brute": 8.40,
-                    "frais_plateforme": 1.10,
-                    "frais_transport": 0.0,
-                    "resultat_net": 6.12,
-                    "plateforme": "eBay",
-                    "statut": "vendu"
-                }
-            }
-
-            # Payload test produit_archiver
-            payload_produit = {
-                "secret": "cashbert-secret-2026",
-                "event": "produit_archiver",
-                "data": {
-                    "reference": "AV-20260316-0001",
-                    "description": "Porte-clé Renault Sport",
-                    "prix_achat_total": 6.0,
-                    "prix_achat_unitaire": 0.10,
-                    "qte_totale": 60,
-                    "qte_vendue": 60,
-                    "prix_vente": 8.50,
-                    "date_achat": "16/03/2026",
-                    "date_vente": "18/03/2026",
-                    "plateforme": "eBay",
-                    "frais_plateforme": 66.30,
-                    "frais_transport": 0.0,
-                    "source": "Brocante",
-                    "statut": "vendu",
-                    "notes": "Etat : Très bon état",
-                    "annonce_generee": "TITRE: Porte-clé Renault Sport..."
-                }
-            }
-
-            async with httpx.AsyncClient(timeout=15) as http:
-                r1 = await http.post(webhook, json=payload_vente)
-                r2 = await http.post(webhook, json=payload_produit)
-
+            from modules.reports import generate_report
+            from modules.accounting import generate_accounting_report
+            periode_map = {"hebdo": "semaine", "mensuel": "mois", "annuel": "annuel"}
+            rapport = await generate_report(periode_map[mode])
+            ca_match = __import__("re").search(r"Chiffre d.affaires.*?(\d+[.,]\d+)", rapport)
+            net_match = __import__("re").search(r"Résultat net.*?(\d+[.,]\d+)", rapport)
+            ca = ca_match.group(1) if ca_match else "0.00"
+            net = net_match.group(1) if net_match else "0.00"
             await thinking.edit_text(
-                f"✅ Payloads envoyés\n"
-                f"  • vente_archiver : {r1.status_code}\n"
-                f"  • produit_archiver : {r2.status_code}\n\n"
-                f"_Dans Make.com → configure les 2 nouveaux chemins du Router_"
+                f"✅ Export {mode} envoyé\nCA : {ca}€ | Profit net : {net}€\nVérifie Google Sheets → Rapports Compta"
             )
         except Exception as e:
             await thinking.edit_text(f"⚠️ Erreur : {e}")
 
     elif mode == "sync":
-        thinking = await update.message.reply_text("🔄 Traitement articles vendus + sync en cours...")
+        thinking = await update.message.reply_text("🔄 Sync articles vendus en cours...")
         try:
             from modules.archive import traiter_articles_vendus, sync_intelligent
-
-            from modules.archive import traiter_articles_vendus, sync_intelligent
-
-            # 1. Traiter les articles vendus/soldés
             result_ventes = await traiter_articles_vendus()
             traites = result_ventes.get("traites", 0)
             archives_v = result_ventes.get("archives_ventes", 0)
             supprimes = result_ventes.get("supprimes", 0)
-
-            # 2. Sync intelligent (snapshot + corrections)
             result_sync = await sync_intelligent()
-
             msg = "✅ *Sync terminé*\n━━━━━━━━━━━━━━━━━━━━\n"
             if traites > 0:
                 msg += (
-                    f"📦 *{traites} article(s) vendus traités*\n"
-                    f"  • {archives_v} vente(s) archivée(s) dans Sheets VENTES\n"
+                    f"📦 *{traites} article(s) traités*\n"
+                    f"  • {archives_v} archivé(s) dans Sheets VENTES\n"
                     f"  • {supprimes} supprimé(s) d'Airtable\n"
                 )
             else:
@@ -2682,27 +2646,15 @@ async def cmd_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if corrections > 0:
                 msg += f"✏️ {corrections} description(s) corrigée(s)\n"
             msg += "📊 _Snapshot mis à jour_"
-
             await thinking.edit_text(msg, parse_mode="Markdown")
         except Exception as e:
-            logger.error(f"archive sync manuel: {e}", exc_info=True)
             await thinking.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
 
-    elif mode == "help":
-        await update.message.reply_text(
-            "📦 *Commandes archive :*\n"
-            "  `/archive test` → test Make.com\n"
-            "  `/archive sync` → sync tous les vendus → Sheets\n"
-            "  `/archive vente REF QTE PRIX` → enregistre vente manuellement",
-            parse_mode="Markdown"
-        )
-
     elif mode == "vente":
-        # /archive vente AV-20260316-0001 1 8.50
         args = context.args[1:] if context.args else []
         if len(args) < 3:
             await update.message.reply_text(
-                "Usage : `/archive vente REF QTE PRIX`\nEx: `/archive vente AV-20260316-0001 1 8.50`",
+                "Usage : `/export vente REF QTE PRIX`\nEx: `/export vente AV-20260316-0001 1 8.50`",
                 parse_mode="Markdown"
             )
             return
@@ -2711,78 +2663,33 @@ async def cmd_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
             qte = int(args[1])
             prix = float(args[2].replace(",", "."))
         except ValueError:
-            await update.message.reply_text("⚠️ Format : `/archive vente REF QTE PRIX`", parse_mode="Markdown")
+            await update.message.reply_text("⚠️ Format : `/export vente REF QTE PRIX`", parse_mode="Markdown")
             return
-
-        thinking = await update.message.reply_text(f"💾 Traitement vente {ref}...")
+        thinking = await update.message.reply_text(f"💾 Enregistrement vente {ref}...")
         try:
             from modules.archive import traiter_vente
             result = await traiter_vente(ref=ref, qte_vendue=qte, prix_vente=prix)
             if not result.get("ok"):
                 await thinking.edit_text(f"⚠️ {result.get('erreur', 'Erreur inconnue')}")
                 return
-
             lot_solde = result.get("lot_solde", False)
             msg = (
                 f"✅ *Vente enregistrée*\n"
                 f"🔖 {result['ref']} — {result['description'][:40]}\n"
                 f"📦 Qté vendue : {result['qte_vendue']} | Restant : {result['qte_restante']}\n"
-                f"💶 Prix : {result['prix_vente']}€ | Résultat net : {result['resultat_net']}€\n"
+                f"💶 Prix : {result['prix_vente']}€ | Net : {result['resultat_net']}€\n"
             )
             if lot_solde:
-                msg += f"\n🎉 *Lot soldé* — archivé dans Google Sheets + supprimé d'Airtable"
+                msg += "\n🎉 *Lot soldé* — archivé + supprimé d'Airtable"
             else:
-                msg += f"\n📊 Archivé dans Sheets VENTES"
-
+                msg += "\n📊 Archivé dans Sheets VENTES"
             await thinking.edit_text(msg, parse_mode="Markdown")
         except Exception as e:
-            logger.error(f"archive vente: {e}", exc_info=True)
             await thinking.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
 
     else:
-        await update.message.reply_text("Usage : `/archive test` · `sync` · `vente REF QTE PRIX`", parse_mode="Markdown")
+        await update.message.reply_text("Usage : `/export hebdo|mensuel|annuel|sync|vente`", parse_mode="Markdown")
 
-async def cmd_export(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /export hebdo   → rapport hebdo → Google Sheets
-    /export mensuel → rapport mensuel
-    /export annuel  → rapport annuel
-    """
-    import os as _os
-    if not _os.getenv("MAKE_WEBHOOK_SHEETS"):
-        await update.message.reply_text(
-            "⚠️ *MAKE_WEBHOOK_SHEETS non configuré*\n\n"
-            "Ajoute dans Railway :\n"
-            "`MAKE_WEBHOOK_SHEETS = https://hook.eu1.make.com/...`",
-            parse_mode="Markdown"
-        )
-        return
-
-    type_rapport = context.args[0].lower() if context.args else "hebdo"
-    if type_rapport not in ("hebdo", "mensuel", "annuel"):
-        await update.message.reply_text(
-            "Usage : `/export hebdo` · `/export mensuel` · `/export annuel`",
-            parse_mode="Markdown"
-        )
-        return
-
-    thinking = await update.message.reply_text(f"📊 Export {type_rapport} vers Google Sheets...")
-    try:
-        from modules.export_sheets import exporter_rapport
-        ok, stats = await exporter_rapport(type_rapport)
-        if ok:
-            await thinking.edit_text(
-                f"✅ *Export {type_rapport} envoyé*\n"
-                f"CA : {stats.get('ca', 0):.2f}€ | "
-                f"Profit net : {stats.get('resultat_net', 0):.2f}€\n"
-                f"_Vérifie Google Sheets → Rapports Compta_",
-                parse_mode="Markdown"
-            )
-        else:
-            await thinking.edit_text("⚠️ Export échoué — vérifie MAKE_WEBHOOK_SHEETS dans Railway.")
-    except Exception as e:
-        logger.error(f"cmd_export: {e}", exc_info=True)
-        await thinking.edit_text(f"⚠️ Erreur : {str(e)[:200]}")
 
 async def cmd_audit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -3100,33 +3007,18 @@ def main():
     app.add_handler(CommandHandler("statut", cmd_statut))         # Changer statut d'un article
 
     # Post & Sell
-    app.add_handler(CommandHandler("listing", cmd_listing))       # Sélectionner + créer annonce
     app.add_handler(CommandHandler("post", cmd_post))             # Publier sur eBay
-    app.add_handler(CommandHandler("vendre", cmd_vendre))         # Marquer vendu manuellement
 
     # Reports
     app.add_handler(CommandHandler("rapport", cmd_rapport))       # /rapport | /rapport live | /rapport bilan
 
     # Config
     app.add_handler(CommandHandler("veille", cmd_veille))          # Veille mensuelle
-    app.add_handler(CommandHandler("archive", cmd_archive))         # Archive Google Sheets
-    app.add_handler(CommandHandler("export", cmd_export))          # Export Google Sheets
+    app.add_handler(CommandHandler("export", cmd_export))          # Export + archive Sheets
     app.add_handler(CommandHandler("audit", cmd_audit))
     app.add_handler(CommandHandler("alertes", cmd_alertes))       # Seuil alertes opportunités
 
     # ── Rétrocompat (anciens noms redirigent vers les nouvelles commandes) ───
-    app.add_handler(CommandHandler("help", aide))
-    app.add_handler(CommandHandler("search", cmd_recherche))
-    app.add_handler(CommandHandler("chercher", cmd_stock))
-    app.add_handler(CommandHandler("annonce", cmd_listing))
-    app.add_handler(CommandHandler("finances", cmd_rapport))
-    app.add_handler(CommandHandler("dashboard", cmd_rapport))
-    app.add_handler(CommandHandler("lot_debut", cmd_lot_debut))
-    app.add_handler(CommandHandler("lot_analyser", cmd_lot_analyser))
-    app.add_handler(CommandHandler("lot_annuler", cmd_lot_annuler))
-    app.add_handler(CommandHandler("analyser", cmd_analyser))
-    app.add_handler(CommandHandler("terminer_photos", cmd_terminer_photos))
-    app.add_handler(CommandHandler("acheter", cmd_acheter))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(CallbackQueryHandler(handle_callback))
